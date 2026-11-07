@@ -1,4 +1,5 @@
-﻿# Python cache files
+
+# Python cache files
 __pycache__/
 *.py[cod]
 
@@ -6,6 +7,7 @@ __pycache__/
 venv/
 .venv/
 env/
+backend/venv/
 
 # Pytest cache
 .pytest_cache/
@@ -20,3 +22,9 @@ env/
 
 # Python package files
 *.egg-info/
+
+# Dataset
+backend/PhiUSIIL_Phishing_URL_Dataset.csv
+
+# macOS
+.DS_Store
