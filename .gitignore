@@ -1,26 +1,25 @@
-
-# Python cache files
+# Python cache
 __pycache__/
 *.py[cod]
 
-# Virtual environments
+# Python virtual environments
 venv/
 .venv/
 env/
 backend/venv/
 
-# Pytest cache
+# Python test cache
 .pytest_cache/
 
-# Environment variables and secrets
+# Secrets
 .env
 .env.*
 
-# IDE files
+# IDE
 .vscode/
 .idea/
 
-# Python package files
+# Python packages
 *.egg-info/
 
 # Dataset
@@ -28,3 +27,18 @@ backend/PhiUSIIL_Phishing_URL_Dataset.csv
 
 # macOS
 .DS_Store
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
