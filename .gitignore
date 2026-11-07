@@ -1,0 +1,24 @@
+
+# Python virtual environment
+backend/venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment variables
+.env
+
+# Dataset
+backend/PhiUSIIL_Phishing_URL_Dataset.csv
+
+# IDE
+.vscode/
+
+.DS_Store
+backend/venv/
+__pycache__/
+*.py[cod]
+.env
+backend/PhiUSIIL_Phishing_URL_Dataset.csv
