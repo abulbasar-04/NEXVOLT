@@ -16,9 +16,5 @@ backend/PhiUSIIL_Phishing_URL_Dataset.csv
 # IDE
 .vscode/
 
+# macOS
 .DS_Store
-backend/venv/
-__pycache__/
-*.py[cod]
-.env
-backend/PhiUSIIL_Phishing_URL_Dataset.csv
