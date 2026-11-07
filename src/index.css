@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #080b14;
+  color: #f8fafc;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::selection {
+  background: #6366f1;
+  color: white;
+}
+
+@media (max-width: 767px) {
+  .nexvolt-shell {
+    flex-direction: column;
+  }
+
+  .nexvolt-sidebar {
+    width: 100%;
+    min-height: 0;
+    padding: 16px;
+    border-right: 0;
+    border-bottom: 1px solid rgb(255 255 255 / 10%);
+  }
+
+  .nexvolt-brand {
+    margin-bottom: 16px;
+  }
+
+  .nexvolt-menu-label {
+    margin-bottom: 8px;
+  }
+
+  .nexvolt-nav {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .nexvolt-nav > button {
+    width: auto;
+    flex: 0 0 auto;
+    white-space: nowrap;
+    padding: 10px 12px;
+  }
+
+  .nexvolt-settings {
+    margin-top: 8px;
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .nexvolt-settings > button {
+    padding: 8px 12px;
+  }
+}
+
+@media (min-width: 480px) and (max-width: 767px) {
+  .nexvolt-dashboard-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 380px) {
+  .nexvolt-dashboard-content {
+    padding: 20px 16px;
+  }
+
+  .nexvolt-card {
+    padding: 16px;
+  }
+}
+ 
