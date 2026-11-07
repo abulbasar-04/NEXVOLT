@@ -1,20 +1,30 @@
 
-# Python virtual environment
-backend/venv/
-venv/
-
-# Python cache
+# Python cache files
 __pycache__/
 *.py[cod]
 
-# Environment variables
+# Virtual environments
+venv/
+.venv/
+env/
+backend/venv/
+
+# Pytest cache
+.pytest_cache/
+
+# Environment variables and secrets
 .env
+.env.*
+
+# IDE files
+.vscode/
+.idea/
+
+# Python package files
+*.egg-info/
 
 # Dataset
 backend/PhiUSIIL_Phishing_URL_Dataset.csv
-
-# IDE
-.vscode/
 
 # macOS
 .DS_Store
