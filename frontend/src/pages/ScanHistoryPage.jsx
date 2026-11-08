@@ -1,7 +1,7 @@
 import React from "react";
 import Icon from "../components/Icon.jsx";
 
-export default function ScanHistoryPage({ history, onSelect, onNavigate, ScanTable, EmptyState }) {
+export default function ScanHistoryPage({ history, onSelect, onReport, onNavigate, ScanTable, EmptyState }) {
   return (
     <section className="panel full-panel">
       <div className="panel-header">
@@ -9,7 +9,7 @@ export default function ScanHistoryPage({ history, onSelect, onNavigate, ScanTab
         <span className="count-chip">{history.length} {history.length === 1 ? "scan" : "scans"}</span>
       </div>
       {history.length
-        ? <ScanTable scans={history} onSelect={onSelect} />
+        ? <ScanTable scans={history} onSelect={onSelect} onReport={onReport} />
         : <EmptyState
             icon="clock"
             title="Your history is clear"

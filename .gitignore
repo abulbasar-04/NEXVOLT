@@ -7,6 +7,9 @@ venv/
 .venv/
 env/
 backend/venv/
+backend/data/*.sqlite3
+backend/data/*.sqlite3-shm
+backend/data/*.sqlite3-wal
 
 # Python test cache
 .pytest_cache/
@@ -14,6 +17,7 @@ backend/venv/
 # Secrets
 .env
 .env.*
+!backend/.env.example
 
 # IDE
 .vscode/

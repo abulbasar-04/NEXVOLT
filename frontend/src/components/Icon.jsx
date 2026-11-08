@@ -2,6 +2,7 @@ import React from "react";
 
 const paths = {
   activity: <><path d="M3 12h4l3-8 4 16 3-8h4" /></>,
+  "alert-triangle": <><path d="m10.3 3.9-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3.1l-8-14a2 2 0 0 0-3.4 0Z" /><path d="M12 9v4M12 17h.01" /></>,
   arrowDown: <><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></>,
   arrowUpRight: <><path d="M7 17 17 7" /><path d="M8 7h9v9" /></>,
   check: <><path d="m5 12 4 4L19 6" /></>,
@@ -20,6 +21,8 @@ const paths = {
   spark: <><path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2L12 3Z" /><path d="m19 14 1.2 2.8L23 18l-2.8 1.2L19 22l-1.2-2.8L15 18l2.8-1.2L19 14Z" /></>,
   target: <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><circle cx="12" cy="12" r="1" /></>,
   terminal: <><path d="m4 17 6-6-6-6M12 19h8" /></>,
+  send: <><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></>,
+  users: <><path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="10" cy="7" r="4" /><path d="M20 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></>,
   x: <><path d="M18 6 6 18M6 6l12 12" /></>,
 };
 

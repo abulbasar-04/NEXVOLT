@@ -6,7 +6,16 @@ import Dashboard from "./pages/Dashboard.jsx";
 import ScannerPage from "./pages/ScannerPage.jsx";
 import ScanHistoryPage from "./pages/ScanHistoryPage.jsx";
 import ThreatIntelligencePage from "./pages/ThreatIntelligencePage.jsx";
+import CommunityReportsPage from "./pages/CommunityReportsPage.jsx";
 import SSLAnalysisPage from "./pages/SSLAnalysisPage.jsx";
+import CertificateMonitoringPage from "./pages/CertificateMonitoringPage.jsx";
+import TrustDashboard from "./pages/TrustDashboard.jsx";
+import SecurityReportPage from "./pages/SecurityReportPage.jsx";
+import {
+  getCertificateDisplayStatus,
+  isCertificateVerified,
+} from "./utils/certificate.js";
+import { hasUnifiedRiskScore } from "./utils/riskScore.js";
 
 const HISTORY_KEY = "nexvolt.scan-history.v1";
 
@@ -15,7 +24,7 @@ function readHistory() {
     const stored = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
     return Array.isArray(stored) ? stored : [];
   } catch (error) {
-    console.warn("Could not read saved NEXVOLT scan history.", error);
+    console.warn("Could not read saved CYBERNOVA scan history.", error);
     return [];
   }
 }
@@ -51,6 +60,14 @@ function getVerdictTone(verdict = "") {
 }
 
 function getScanStatus(result) {
+  if (
+    !hasUnifiedRiskScore(result) ||
+    String(result.risk_category || "").toLowerCase() === "unknown" ||
+    String(result.verdict || "").toLowerCase() === "unknown"
+  ) {
+    return { label: "Unknown", tone: "warning", heuristicRisk: false, modelRisk: false };
+  }
+
   const heuristicRisk = getVerdictTone(result.verdict) !== "safe";
   const prediction = result.ml_prediction?.prediction || "";
   const phishingProbability = Number(result.ml_prediction?.phishing_probability);
@@ -72,7 +89,8 @@ function getScanStatus(result) {
 }
 
 function isRiskyScan(scan) {
-  return getScanStatus(scan.result).tone !== "safe";
+  const status = getScanStatus(scan.result);
+  return status.heuristicRisk || status.modelRisk;
 }
 
 function SidebarHeader({ title, subtitle, onMenu }) {
@@ -84,7 +102,7 @@ function SidebarHeader({ title, subtitle, onMenu }) {
       <div className="page-heading"><h1>{title}</h1><p>{subtitle}</p></div>
       <div className="topbar-right">
         <span className="environment-pill"><span className="status-dot online" /> LIVE ENVIRONMENT</span>
-        <div className="user-avatar" title="NEXVOLT workspace">NV</div>
+        <div className="user-avatar" title="CYBERNOVA workspace"><img src="/cybernova-logo.png" alt="CYBERNOVA" /></div>
       </div>
     </header>
   );
@@ -147,14 +165,21 @@ function ScanComposer({ value, onChange, onSubmit, scanning, error }) {
   );
 }
 
-function RiskScore({ score, verdict, tone: statusTone }) {
+function RiskScore({ score, verdict, tone: statusTone, label = "RISK SCORE" }) {
   const tone = statusTone || getVerdictTone(verdict);
   const radius = 52;
   const circumference = 2 * Math.PI * radius;
-  const progress = circumference * (1 - Math.min(Math.max(score, 0), 100) / 100);
+  const hasScore = score !== null && score !== undefined && Number.isFinite(Number(score));
+  const numericScore = hasScore ? Number(score) : 0;
+  const progress = circumference * (1 - Math.min(Math.max(numericScore, 0), 100) / 100);
   return (
     <div className={`risk-score ${tone}`}>
-      <svg viewBox="0 0 128 128" className="risk-ring" role="img" aria-label={`Risk score ${score} out of 100`}>
+      <svg
+        viewBox="0 0 128 128"
+        className="risk-ring"
+        role="img"
+        aria-label={hasScore ? `${label} ${numericScore} out of 100` : `${label} unavailable`}
+      >
         <circle className="risk-track" cx="64" cy="64" r={radius} />
         <circle
           className="risk-progress"
@@ -165,18 +190,50 @@ function RiskScore({ score, verdict, tone: statusTone }) {
           strokeDashoffset={progress}
         />
       </svg>
-      <div className="risk-score-number"><strong>{score}</strong><span>/100</span></div>
-      <span className="risk-score-label">RISK SCORE</span>
+      <div className="risk-score-number"><strong>{hasScore ? numericScore : "—"}</strong><span>/100</span></div>
+      <span className="risk-score-label">{label}</span>
     </div>
   );
 }
 
-function ScanResult({ scan }) {
+function ScanResult({ scan, onViewReport }) {
   const result = scan.result;
   const status = getScanStatus(result);
   const tone = status.tone;
   const ml = result.ml_prediction || {};
   const analysis = result.analysis || {};
+  const certificate = result.certificate_analysis || {};
+  const certificateStatus = getCertificateDisplayStatus(certificate);
+  const certificateVerified = isCertificateVerified(certificate);
+  const website = result.website_analysis || {};
+  const websiteFindings = Array.isArray(website.findings) ? website.findings : [];
+  const websiteFindingTitles = new Set(websiteFindings);
+  const scanFindings = (Array.isArray(result.findings) ? result.findings : []).filter(
+    (finding) => !websiteFindingTitles.has(finding),
+  );
+  const websiteHeaders = Object.entries(website.security_headers || {});
+  const checkedHeaders = websiteHeaders.filter(([, present]) => present !== null);
+  const presentHeaderCount = checkedHeaders.filter(([, present]) => present === true).length;
+  const observedCookies = Array.isArray(website.cookies) ? website.cookies : [];
+  const redirectAnalysis = website.redirect_analysis;
+  const mixedContent = website.mixed_content || {};
+  const websiteFindingDetails = Array.isArray(result.finding_details)
+    ? result.finding_details.filter((finding) => finding.source === "website_assessment")
+    : [];
+  const displayRedirectTarget = (value) => {
+    try {
+      const target = new URL(value);
+      return `${target.host}${target.pathname}`;
+    } catch {
+      return "Unavailable destination";
+    }
+  };
+  const scoreExplanation = result.score_explanation;
+  const unifiedScoreAvailable = hasUnifiedRiskScore(result);
+  const hasTrustScore = unifiedScoreAvailable && Number.isFinite(result.trust_score);
+  const displayedScore = unifiedScoreAvailable
+    ? hasTrustScore ? result.trust_score : result.risk_score
+    : null;
   const dnsRecords = scan.dns?.dns_records || {};
   const recordCount = Object.values(dnsRecords).reduce(
     (count, records) => count + (Array.isArray(records) ? records.length : 0),
@@ -189,10 +246,20 @@ function ScanResult({ scan }) {
           <div className={`result-status-icon ${tone}`}><Icon name={tone === "safe" ? "shield" : "shieldAlert"} size={20} /></div>
           <div><div className="section-kicker">LATEST ANALYSIS</div><h2>Scan result</h2></div>
         </div>
+        {onViewReport && (
+          <button type="button" className="text-button no-print" onClick={() => onViewReport(scan)}>
+            Full report <Icon name="chevron" size={14} />
+          </button>
+        )}
         <span className="timestamp"><Icon name="clock" size={14} />{formatDate(scan.scannedAt)}</span>
       </div>
       <div className="result-main">
-        <RiskScore score={result.risk_score} verdict={result.verdict} tone={tone} />
+        <RiskScore
+          score={displayedScore}
+          verdict={unifiedScoreAvailable ? result.verdict : "Unknown"}
+          tone={tone}
+          label={hasTrustScore ? "WEBSITE TRUST" : "UNIFIED RISK SCORE"}
+        />
         <div className="result-summary">
           <span className={`verdict-pill ${tone}`}><span className="status-dot" />{status.label}</span>
           {status.label === "Mixed signals" && <p className="status-conflict">Heuristics: {result.verdict} · AI model: {ml.prediction || "no classification"}</p>}
@@ -209,6 +276,7 @@ function ScanResult({ scan }) {
         <div className="detail-block">
           <div className="detail-heading"><span className="detail-heading-icon purple"><Icon name="spark" size={15} /></span> AI MODEL</div>
           <div className="detail-primary">{ml.prediction || "Not available"}</div>
+          <div className="probability-row"><span>Prediction source</span><strong>{ml.model_source || "Not reported"}</strong></div>
           <div className="probability-row"><span>Phishing probability</span><strong>{Number.isFinite(ml.phishing_probability) ? `${ml.phishing_probability}%` : "—"}</strong></div>
           <div className="probability-track"><span style={{ width: `${Math.min(Math.max(Number(ml.phishing_probability) || 0, 0), 100)}%` }} /></div>
           <div className="probability-row legitimate-row"><span>Legitimate probability</span><strong>{Number.isFinite(ml.legitimate_probability) ? `${ml.legitimate_probability}%` : "—"}</strong></div>
@@ -228,17 +296,292 @@ function ScanResult({ scan }) {
         </div>
       </div>
       <div className="finding-section">
-        <div className="detail-heading"><span className="detail-heading-icon amber"><Icon name="activity" size={15} /></span> SCAN FINDINGS <span className="finding-count">{result.findings?.length || 0}</span></div>
-        {result.findings?.length ? (
-          <ul className="finding-list">{result.findings.map((finding, index) => (
-            <li key={`${finding}-${index}`}><span className="finding-bullet" />{finding}</li>
-          ))}</ul>
-        ) : <div className="clean-finding"><Icon name="check" size={15} /> No heuristic risk indicators were detected.</div>}
+        <div className="detail-heading"><span className="detail-heading-icon amber"><Icon name="activity" size={15} /></span> SCAN FINDINGS <span className="finding-count">{scanFindings.length}</span></div>
+        {scanFindings.length ? (
+          <ul className="finding-list">{scanFindings.map((finding, index) => {
+            const detail = (result.finding_details || []).find((item) => item.title === finding);
+            return (
+              <li key={`${finding}-${index}`}>
+                <span className="finding-bullet" />
+                <div className="finding-copy">
+                  <span>{finding}</span>
+                  {detail?.severity && <span className={`finding-severity ${detail.severity}`}>{detail.severity}</span>}
+                  {detail?.evidence && <small>{detail.evidence}</small>}
+                  {detail?.recommendation && <small>Recommendation: {detail.recommendation}</small>}
+                </div>
+              </li>
+            );
+          })}</ul>
+        ) : websiteFindings.length ? (
+          <div className="muted-copy">Website assessment findings are listed below.</div>
+        ) : <div className="clean-finding"><Icon name="check" size={15} /> No other scan findings were reported.</div>}
       </div>
       <div className="transport-strip">
         <span className={`transport-icon ${analysis.uses_https ? "good" : "attention"}`}><Icon name="lock" size={15} /></span>
-        <div><strong>{analysis.uses_https ? "HTTPS transport detected" : "Unencrypted HTTP connection"}</strong><span>{analysis.uses_https ? "The URL uses HTTPS. Certificate issuer and expiration are not exposed by this API." : "This address does not use HTTPS."}</span></div>
+        <div><strong>{analysis.uses_https ? "HTTPS transport detected" : "Unencrypted HTTP connection"}</strong><span>{analysis.uses_https ? `Certificate validation: ${certificateVerified ? "verified" : certificateStatus}.` : "This address does not use HTTPS."}</span></div>
         <span className={`transport-state ${analysis.uses_https ? "good" : "attention"}`}>{analysis.uses_https ? "HTTPS" : "HTTP"}</span>
+      </div>
+
+      {/* SECURITY ANALYSIS DETAILS */}
+      <div className="security-analysis-section">
+        <div className="detail-heading">
+          <span className="detail-heading-icon purple"><Icon name="shield" size={15} /></span>
+          SECURITY ANALYSIS BREAKDOWN
+        </div>
+
+        <div className="result-details-grid">
+          <div className="detail-block">
+            <div className="detail-heading">
+              {hasTrustScore ? "UNIFIED WEBSITE TRUST SCORE" : "LEGACY SCORE BREAKDOWN"}
+            </div>
+            {hasTrustScore && (
+              <div className="detail-primary">{result.trust_score.toFixed(2)} / 100</div>
+            )}
+            {scoreExplanation?.components ? scoreExplanation.components.map((component) => (
+              <div className="probability-row" key={component.key}>
+                <span>{component.label}</span>
+                <strong>
+                  {component.risk_score === null
+                    ? `Unavailable (${component.status})`
+                    : `${Number(component.risk_score).toFixed(1)} risk · ${(component.effective_weight * 100).toFixed(0)}% weight`}
+                </strong>
+              </div>
+            )) : Object.entries(result.score_breakdown || {}).map(([key, value]) => (
+              <div className="probability-row" key={key}>
+                <span>{key.replaceAll("_", " ").toUpperCase()}</span>
+                <strong>
+                  {value !== null && value !== undefined && Number.isFinite(Number(value))
+                    ? Number(value).toFixed(1)
+                    : "Unavailable"}
+                </strong>
+              </div>
+            ))}
+            {!hasTrustScore && (
+              <p className="score-explanation-copy">
+                A unified trust score was not recorded for this saved scan.
+              </p>
+            )}
+            {scoreExplanation?.method && (
+              <p className="score-explanation-copy">
+                {scoreExplanation.method}{" "}
+                {scoreExplanation.risk_score === null
+                  ? "Risk score unavailable."
+                  : `Composite risk: ${scoreExplanation.risk_score}/100; trust = 100 - risk.`}{" "}
+                Coverage: {scoreExplanation.coverage_percent}%.
+              </p>
+            )}
+            {!scoreExplanation?.components && !Object.keys(result.score_breakdown || {}).length && (
+              <span className="muted-copy">Score breakdown unavailable</span>
+            )}
+          </div>
+
+          <div className="detail-block">
+            <div className="detail-heading">TLS CERTIFICATE</div>
+            {(() => {
+              const cert = result.certificate_analysis || {};
+              const certStatus = getCertificateDisplayStatus(cert);
+              const certVerified = isCertificateVerified(cert);
+              return (
+                <>
+                  <div className={`detail-primary ${certVerified ? "text-good" : "text-warn"}`}>
+                    {certStatus.replaceAll("_", " ").toUpperCase()}
+                  </div>
+                  <div className="probability-row"><span>Issuer</span><strong>{typeof cert.issuer === "string" ? cert.issuer : cert.issuer && typeof cert.issuer === "object" ? Object.values(cert.issuer).filter(Boolean).join(", ") : "—"}</strong></div>
+                  <div className="probability-row"><span>Hostname match</span><strong>{cert.hostname_match === true ? "Yes" : cert.hostname_match === false ? "No" : "—"}</strong></div>
+                  <div className="probability-row"><span>Days remaining</span><strong>{cert.days_remaining ?? "—"}</strong></div>
+                  {cert.error && <div className="dns-error">{cert.error}</div>}
+                </>
+              );
+            })()}
+          </div>
+        </div>
+
+        <div className="finding-section">
+          <div className="detail-heading">
+            <span className="detail-heading-icon amber"><Icon name="shieldAlert" size={15} /></span>
+            URLHAUS THREAT INTELLIGENCE
+          </div>
+          {(() => {
+            const intel = result.threat_intelligence?.urlhaus || {};
+            const details = intel.details || {};
+            const malicious = intel.malicious === true || intel.status === "malicious";
+            return (
+              <>
+                <div className={`verdict-pill ${malicious ? "danger" : intel.status === "not_found" ? "safe" : "attention"}`}>
+                  <span className="status-dot" />
+                  {malicious ? "MALICIOUS URL DETECTED" : intel.status === "not_found" ? "NOT FOUND IN URLHAUS" : "INTELLIGENCE UNAVAILABLE"}
+                </div>
+                {details.threat && <div className="probability-row"><span>Threat</span><strong>{details.threat}</strong></div>}
+                {details.url_status && <div className="probability-row"><span>URL status</span><strong>{details.url_status}</strong></div>}
+                {details.date_added && <div className="probability-row"><span>Reported on</span><strong>{details.date_added}</strong></div>}
+                {details.reporter && <div className="probability-row"><span>Reporter</span><strong>{details.reporter}</strong></div>}
+                {Array.isArray(details.tags) && details.tags.length > 0 && (
+                  <div className="dns-summary">{details.tags.map(tag => <span className="dns-tag" key={tag}>{tag}</span>)}</div>
+                )}
+                {intel.error && <div className="dns-error">{intel.error}</div>}
+                <p className="disclaimer">Not found in URLhaus does not guarantee that a website is safe.</p>
+              </>
+            );
+          })()}
+        </div>
+
+        <div className="finding-section">
+          <div className="detail-heading">
+            <span className="detail-heading-icon cyan"><Icon name="globe" size={15} /></span>
+            WEBSITE ANALYSIS
+          </div>
+          <div className="probability-row">
+            <span>Assessment status</span>
+            <strong>{website.status || "Unavailable"}</strong>
+          </div>
+          <div className="probability-row">
+            <span>Security header checks</span>
+            <strong>{website.security_header_status || "Unavailable"}</strong>
+          </div>
+          <div className="probability-row">
+            <span>Redirect-chain checks</span>
+            <strong>{website.redirect_status || "Unavailable"}</strong>
+          </div>
+          <div className="probability-row">
+            <span>Cookie attribute checks</span>
+            <strong>{website.cookie_status || "Unavailable"}</strong>
+          </div>
+          {website.https_enforcement && (
+            <div className="probability-row">
+              <span>HTTPS enforcement</span>
+              <strong>{(website.https_enforcement.status || "unavailable").replaceAll("_", " ")}</strong>
+            </div>
+          )}
+          {checkedHeaders.length > 0 && (
+            <>
+              <div className="probability-row">
+                <span>Security headers present</span>
+                <strong>{presentHeaderCount} / {checkedHeaders.length}</strong>
+              </div>
+              <div className="dns-summary website-header-tags">
+                {websiteHeaders.map(([header, present]) => (
+                  <span
+                    className={`dns-tag security-header-tag ${present === null ? "not-applicable" : present ? "present" : "missing"}`}
+                    key={header}
+                  >
+                    {header}: {present === null ? "N/A" : present ? "Present" : "Missing"}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
+          {redirectAnalysis && (
+            <>
+              <div className="probability-row">
+                <span>Redirects observed</span>
+                <strong>{redirectAnalysis.count}</strong>
+              </div>
+              <div className="probability-row">
+                <span>Cross-origin redirects</span>
+                <strong>{redirectAnalysis.cross_origin_count}</strong>
+              </div>
+              <div className="probability-row">
+                <span>HTTPS downgrade</span>
+                <strong>{redirectAnalysis.https_downgrade ? "Detected" : "Not observed"}</strong>
+              </div>
+              <div className="probability-row">
+                <span>Redirect loop</span>
+                <strong>{redirectAnalysis.loop_detected ? "Detected" : "Not observed"}</strong>
+              </div>
+              {redirectAnalysis.chain?.length > 0 && (
+                <ul className="finding-list website-redirect-chain">
+                  {redirectAnalysis.chain.map((hop, index) => (
+                    <li key={`${hop.from}-${index}`}>
+                      <span className="finding-bullet" />
+                      <div className="finding-copy">
+                        <span>HTTP {hop.status}: {displayRedirectTarget(hop.from)} → {displayRedirectTarget(hop.to)}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {redirectAnalysis.suspicious_patterns?.length > 0 && (
+                <div className="website-analysis-note">
+                  Redirect pattern requires review: {redirectAnalysis.suspicious_patterns.map((pattern) => pattern.type.replaceAll("_", " ")).join(", ")}.
+                </div>
+              )}
+            </>
+          )}
+          {mixedContent.status && (
+            <div className="probability-row">
+              <span>Mixed content inspection</span>
+              <strong>{mixedContent.status.replaceAll("_", " ")}</strong>
+            </div>
+          )}
+          {mixedContent.resources?.length > 0 && (
+            <div className="website-analysis-note">
+              HTTP resource references observed ({mixedContent.resource_count || mixedContent.resources.length}): {mixedContent.resources.map((resource) => `${resource.element} → ${resource.hostname}`).join(", ")}
+              {mixedContent.truncated ? " · Inspection is partial; the HTML sample or displayed-reference limit was reached." : ""}
+            </div>
+          )}
+          {mixedContent.insecure_forms?.length > 0 && (
+            <div className="website-analysis-note">
+              Forms posting over HTTP ({mixedContent.form_count || mixedContent.insecure_forms.length}): {mixedContent.insecure_forms.join(", ")}
+            </div>
+          )}
+          {mixedContent.status === "partial" && !mixedContent.resources?.length && (
+            <div className="website-analysis-note">
+              No mixed-content reference was observed in the sampled portion; additional page content was not inspected.
+            </div>
+          )}
+          {observedCookies.length > 0 && (
+            <>
+              <div className="probability-row">
+                <span>Cookies observed</span>
+                <strong>{observedCookies.length}</strong>
+              </div>
+              {["secure", "http_only", "same_site"].map((attribute) => {
+                const count = observedCookies.filter((cookie) =>
+                  attribute === "same_site"
+                    ? Boolean(cookie.same_site)
+                    : cookie[attribute] === true,
+                ).length;
+                const label = attribute === "http_only"
+                  ? "HttpOnly"
+                  : attribute === "same_site"
+                    ? "SameSite"
+                    : "Secure";
+                return (
+                  <div className="probability-row" key={attribute}>
+                    <span>Cookies with {label}</span>
+                    <strong>{count} / {observedCookies.length}</strong>
+                  </div>
+                );
+              })}
+            </>
+          )}
+          {websiteFindings.length ? (
+            <ul className="finding-list">{websiteFindings.map((item, index) => {
+              const detail = (website.finding_details || []).find((finding) =>
+                finding.title === item,
+              ) || websiteFindingDetails.find((finding) => finding.title === item);
+              return (
+                <li key={`${item}-${index}`}>
+                  <span className="finding-bullet" />
+                  <div className="finding-copy">
+                    <span>{typeof item === "string" ? item : item.title || JSON.stringify(item)}</span>
+                    {detail?.severity && <span className={`finding-severity ${detail.severity}`}>{detail.severity}</span>}
+                    {detail?.classification && <small className="finding-classification">{detail.classification.replaceAll("_", " ")}</small>}
+                    {detail?.evidence && <small>{detail.evidence}</small>}
+                    {detail?.recommendation && <small>Recommendation: {detail.recommendation}</small>}
+                  </div>
+                </li>
+              );
+            })}</ul>
+          ) : website.status === "completed" ? (
+            <div className="clean-finding"><Icon name="check" size={15} /> No website findings were reported by this assessment.</div>
+          ) : (
+            <div className="muted-copy">{website.error || "Website security checks were unavailable."}</div>
+          )}
+          <p className="website-assessment-scope">
+            Passive assessment only: the scanner does not execute JavaScript. Mixed-content checks inspect at most 512 KB of returned HTML; dynamic or later-loaded resources are not covered.
+          </p>
+        </div>
       </div>
     </section>
   );
@@ -254,7 +597,7 @@ function EmptyState({ icon, title, description, action, onAction }) {
   );
 }
 
-function ScanTable({ scans, onSelect, compact = false }) {
+function ScanTable({ scans, onSelect, onReport, compact = false }) {
   if (!scans.length) {
     return <EmptyState icon="clock" title="No scans yet" description="Your completed URL scans will appear here." />;
   }
@@ -264,14 +607,28 @@ function ScanTable({ scans, onSelect, compact = false }) {
         <thead><tr><th>WEBSITE</th><th>VERDICT</th><th>RISK SCORE</th><th>SCANNED</th><th /></tr></thead>
         <tbody>
           {scans.slice(0, compact ? 4 : undefined).map((scan) => {
-            const tone = getScanStatus(scan.result).tone;
+            const status = getScanStatus(scan.result);
+            const tone = status.tone;
+            const hasRiskScore = hasUnifiedRiskScore(scan.result);
             return (
               <tr key={scan.id} onClick={() => onSelect(scan)} tabIndex={0} onKeyDown={(event) => event.key === "Enter" && onSelect(scan)}>
                 <td><div className="table-domain"><span className="table-favicon"><Icon name="globe" size={14} /></span><span><strong>{scan.result.analysis?.domain || scan.result.url}</strong><small>{scan.result.url}</small></span></div></td>
-                <td><span className={`table-verdict ${tone}`}><span className="status-dot" />{scan.result.verdict}</span></td>
-                <td><span className={`table-score ${tone}`}>{scan.result.risk_score}<small>/100</small></span></td>
+                <td><span className={`table-verdict ${tone}`}><span className="status-dot" />{status.label}</span></td>
+                <td><span className={`table-score ${tone}`}>{hasRiskScore ? scan.result.risk_score : "—"}{hasRiskScore && <small>/100</small>}</span></td>
                 <td className="table-date">{formatDate(scan.scannedAt)}</td>
-                <td><Icon name="chevron" size={15} className="table-chevron" /></td>
+                <td className="scan-table-actions">
+                  {onReport && (
+                    <button
+                      type="button"
+                      className="table-report-button"
+                      aria-label={`View security report for ${scan.result.analysis?.domain || scan.result.url}`}
+                      onClick={(event) => { event.stopPropagation(); onReport(scan); }}
+                    >
+                      Report
+                    </button>
+                  )}
+                  <Icon name="chevron" size={15} className="table-chevron" />
+                </td>
               </tr>
             );
           })}
@@ -309,7 +666,10 @@ export default function App() {
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState("");
   const [apiOnline, setApiOnline] = useState(false);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [apiError, setApiError] = useState("");
+  const [mobileNavOpen, setMobileNavOpen] = useState(
+    () => !window.matchMedia("(max-width: 920px)").matches,
+  );
 
   const selectedScan = useMemo(
     () => history.find((scan) => scan.id === selectedScanId) || history[0] || null,
@@ -319,16 +679,43 @@ export default function App() {
   useEffect(() => {
     let active = true;
     getHealth().then(
-      (data) => active && setApiOnline(data.status === "healthy"),
-      () => active && setApiOnline(false),
+      (data) => {
+        if (active) {
+          setApiOnline(data.status === "healthy");
+          setApiError("");
+        }
+      },
+      (error) => {
+        if (active) {
+          setApiOnline(false);
+          setApiError(error.message);
+        }
+      },
     );
     const refresh = window.setInterval(() => {
       getHealth().then(
-        (data) => active && setApiOnline(data.status === "healthy"),
-        () => active && setApiOnline(false),
+        (data) => {
+          if (active) {
+            setApiOnline(data.status === "healthy");
+            setApiError("");
+          }
+        },
+        (error) => {
+          if (active) {
+            setApiOnline(false);
+            setApiError(error.message);
+          }
+        },
       );
     }, 30_000);
     return () => { active = false; window.clearInterval(refresh); };
+  }, []);
+
+  useEffect(() => {
+    const viewportQuery = window.matchMedia("(max-width: 920px)");
+    const syncSidebarToViewport = (event) => setMobileNavOpen(!event.matches);
+    viewportQuery.addEventListener("change", syncSidebarToViewport);
+    return () => viewportQuery.removeEventListener("change", syncSidebarToViewport);
   }, []);
 
   function persistHistory(nextHistory) {
@@ -337,7 +724,7 @@ export default function App() {
     try {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory));
     } catch (error) {
-      console.error("Could not save NEXVOLT scan history.", error);
+      console.error("Could not save CYBERNOVA scan history.", error);
     }
   }
 
@@ -391,41 +778,59 @@ export default function App() {
     setActiveView("scanner");
   }
 
+  function selectReport(scan) {
+    setSelectedScanId(scan.id);
+    setActiveView("report");
+  }
+
   const pageInfo = {
-    overview: ["Overview", "Monitor website trust and analyze suspicious URLs."],
+    overview: ["Dashboard", "Monitor website trust and analyze suspicious URLs."],
+    trust: ["Trust dashboard", "Review measured risk, evidence, component coverage, and limitations."],
     scanner: ["URL scanner", "Analyze a URL and inspect phishing and security signals."],
     history: ["Scan history", "Review previous URL analysis results."],
     intelligence: ["Threat intelligence", "Understand the signals behind your URL risk assessment."],
+    "community-reports": ["Community threat reports", "Submit and review community-submitted suspicious URLs."],
     ssl: ["SSL certificate analysis", "Review transport security details from your latest scan."],
+    "certificate-monitoring": ["Certificate monitoring", "Track certificate changes across monitored domains."],
+    report: ["Security report", "Review or print the complete report for a saved scan."],
   }[activeView];
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${mobileNavOpen ? "sidebar-open" : "sidebar-closed"}`}>
       {mobileNavOpen && <button className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
       <div className={`sidebar-container ${mobileNavOpen ? "open" : ""}`}>
-        <Sidebar activeView={activeView} onNavigate={setActiveView} apiOnline={apiOnline} onClose={() => setMobileNavOpen(false)} />
+        <Sidebar
+          activeView={activeView}
+          onNavigate={setActiveView}
+          apiOnline={apiOnline}
+          onClose={() => {
+            setMobileNavOpen(false);
+          }}
+        />
       </div>
       <main className="main-content">
-        <SidebarHeader title={pageInfo[0]} subtitle={pageInfo[1]} onMenu={() => setMobileNavOpen(true)} />
+        <SidebarHeader title={pageInfo[0]} subtitle={pageInfo[1]} onMenu={() => setMobileNavOpen((isOpen) => !isOpen)} />
         <div className="page-content">
           <div className="backend-banner">
             <span className={`status-dot ${apiOnline ? "online" : "offline"}`} />
-            <span>{apiOnline ? "Connected to NEXVOLT API" : "Backend not responding"}</span>
+            <span>{apiOnline ? "Connected to CYBERNOVA API" : "Backend not responding"}</span>
             <span className="backend-url">{API_BASE_URL}</span>
-            {!apiOnline && <span className="backend-help">Start the FastAPI server to scan URLs.</span>}
+            {!apiOnline && <span className="backend-help">{apiError || "Start the FastAPI server to scan URLs."}</span>}
           </div>
           {activeView === "overview" && (
             <Dashboard
               history={history}
               currentScan={selectedScan}
               onSelect={selectScan}
+              onReport={selectReport}
+              onViewReport={selectReport}
               onNavigate={setActiveView}
               isRiskyScan={isRiskyScan}
               MetricCard={MetricCard}
               ScanTable={ScanTable}
               ThreatSummary={ThreatSummary}
               EmptyState={EmptyState}
-              ScanResult={ScanResult}
+              ScanResult={(props) => <ScanResult {...props} onViewReport={selectReport} />}
               composer={
                 <ScanComposer
                   value={url}
@@ -450,13 +855,17 @@ export default function App() {
               }
               scan={selectedScan}
               scanning={scanning}
-              ScanResult={ScanResult}
+              ScanResult={(props) => <ScanResult {...props} onViewReport={selectReport} />}
             />
           )}
-          {activeView === "history" && <ScanHistoryPage history={history} onSelect={selectScan} onNavigate={setActiveView} ScanTable={ScanTable} EmptyState={EmptyState} />}
+          {activeView === "history" && <ScanHistoryPage history={history} onSelect={selectScan} onReport={selectReport} onNavigate={setActiveView} ScanTable={ScanTable} EmptyState={EmptyState} />}
           {activeView === "intelligence" && <ThreatIntelligencePage scan={selectedScan} onNavigate={setActiveView} EmptyState={EmptyState} ThreatSummary={ThreatSummary} />}
+          {activeView === "community-reports" && <CommunityReportsPage />}
           {activeView === "ssl" && <SSLAnalysisPage scan={selectedScan} onNavigate={setActiveView} EmptyState={EmptyState} />}
-          <footer className="page-footer"><span>NEXVOLT SECURITY INTELLIGENCE</span><span>Scan results are preliminary assessments, not guarantees of safety.</span></footer>
+          {activeView === "certificate-monitoring" && <CertificateMonitoringPage />}
+          {activeView === "trust" && <TrustDashboard scan={selectedScan} onNavigate={setActiveView} onViewReport={() => selectedScan && selectReport(selectedScan)} EmptyState={EmptyState} />}
+          {activeView === "report" && <SecurityReportPage scan={selectedScan} onNavigate={setActiveView} EmptyState={EmptyState} />}
+          <footer className="page-footer"><span>CYBERNOVA SECURITY INTELLIGENCE</span><span>Scan results are preliminary assessments, not guarantees of safety.</span></footer>
         </div>
       </main>
       <div className="toast-aria" aria-live="polite" />

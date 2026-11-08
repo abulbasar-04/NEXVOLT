@@ -18,33 +18,77 @@ def detect_phishing(url: str) -> dict:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower().rstrip(".")
     reasons = []
+    findings = []
     score = 0
 
+    def add_finding(title: str, severity: str, evidence: str, points: int) -> None:
+        nonlocal score
+        score += points
+        reasons.append(title)
+        findings.append({
+            "title": title,
+            "severity": severity,
+            "evidence": evidence,
+            "source": "rule_based",
+            "score_impact": points,
+        })
+
     if not host:
-        return {"risk_score": 100, "reasons": ["Invalid hostname"]}
+        finding = {
+            "title": "Invalid hostname",
+            "severity": "high",
+            "evidence": "The submitted URL does not contain a valid hostname.",
+            "source": "rule_based",
+            "score_impact": 100,
+        }
+        return {
+            "risk_score": 100,
+            "reasons": [finding["title"]],
+            "findings": [finding],
+        }
 
     try:
         ipaddress.ip_address(host)
-        score += 35
-        reasons.append("URL uses an IP address instead of a domain.")
+        add_finding(
+            "URL uses an IP address instead of a domain.",
+            "medium",
+            f"Hostname is the IP address {host}.",
+            35,
+        )
     except ValueError:
         pass
 
     if "@" in url:
-        score += 25
-        reasons.append("URL contains an @ symbol.")
+        add_finding(
+            "URL contains an @ symbol.",
+            "high",
+            "The URL contains an @ character, which can obscure the actual hostname.",
+            25,
+        )
 
     if host.count("-") >= 2:
-        score += 15
-        reasons.append("Domain contains multiple hyphens.")
+        add_finding(
+            "Domain contains multiple hyphens.",
+            "low",
+            f"Hostname {host} contains {host.count('-')} hyphens.",
+            15,
+        )
 
     if len(url) > 100:
-        score += 10
-        reasons.append("Unusually long URL.")
+        add_finding(
+            "Unusually long URL.",
+            "low",
+            f"URL length is {len(url)} characters (heuristic threshold: 100).",
+            10,
+        )
 
     if parsed.scheme != "https":
-        score += 10
-        reasons.append("URL does not use HTTPS.")
+        add_finding(
+            "URL does not use HTTPS.",
+            "medium",
+            f"URL scheme is {parsed.scheme or 'missing'}, not HTTPS.",
+            10,
+        )
 
     labels = host.split(".")
     registered_domain = ".".join(labels[-2:]) if len(labels) >= 2 else host
@@ -57,17 +101,25 @@ def detect_phishing(url: str) -> dict:
             )
 
             if not exact_or_subdomain and brand not in registered_domain:
-                score += 40
-                reasons.append(
-                    f"Possible {brand} brand impersonation in domain."
+                add_finding(
+                    f"Possible {brand} brand impersonation in domain.",
+                    "high",
+                    f"Hostname {host} contains {brand!r} but is not that brand's domain or subdomain.",
+                    40,
                 )
                 break
 
     if any(word in host for word in SUSPICIOUS_WORDS):
-        score += 10
-        reasons.append("Domain contains a sensitive login-related keyword.")
+        matched_words = sorted(word for word in SUSPICIOUS_WORDS if word in host)
+        add_finding(
+            "Domain contains a sensitive login-related keyword.",
+            "low",
+            f"Hostname contains: {', '.join(matched_words)}.",
+            10,
+        )
 
     return {
         "risk_score": min(score, 100),
-        "reasons": reasons
+        "reasons": reasons,
+        "findings": findings,
     }
