@@ -7,75 +7,79 @@ from urllib.parse import urlparse
 def extract_url_features(url: str) -> dict:
     """
     Extract numerical URL features for NEXVOLT ML model.
+    Normalize www prefix consistently across all URL features.
     """
 
     url = url.strip()
 
-    # Parse URL
-    parsed = urlparse(url)
+    # Normalize www prefix in the URL itself
+    normalized_url = re.sub(
+        r"(?i)(https?://)www\.",
+        r"\1",
+        url,
+        count=1
+    )
+
+    # Parse normalized URL
+    parsed = urlparse(normalized_url)
     hostname = parsed.hostname or ""
     host = hostname.lower()
 
-    # URL length
-    url_length = len(url)
-
-    # Domain length
+    url_length = len(normalized_url)
     domain_length = len(host)
 
-    # IP address detection
     try:
         ipaddress.ip_address(host)
         is_domain_ip = 1
     except ValueError:
         is_domain_ip = 0
 
-    # TLD length
     domain_parts = host.split(".")
+
     tld = domain_parts[-1] if len(domain_parts) > 1 else ""
     tld_length = len(tld)
 
-    # Subdomain count
     subdomain_count = max(len(domain_parts) - 2, 0)
 
-    # Obfuscation detection
     obfuscated_chars = len(
-        re.findall(r"%[0-9a-fA-F]{2}", url)
+        re.findall(r"%[0-9a-fA-F]{2}", normalized_url)
     )
 
     has_obfuscation = 1 if obfuscated_chars > 0 else 0
 
     obfuscation_ratio = (
-        obfuscated_chars / url_length
-        if url_length > 0 else 0
+        obfuscated_chars / url_length if url_length > 0 else 0
     )
 
-    # Letters
-    letters = sum(char.isalpha() for char in url)
-    letter_ratio = letters / url_length if url_length else 0
+    letters = sum(char.isalpha() for char in normalized_url)
 
-    # Digits
-    digits = sum(char.isdigit() for char in url)
-    digit_ratio = digits / url_length if url_length else 0
+    letter_ratio = (
+        letters / url_length if url_length > 0 else 0
+    )
 
-    # Special characters
-    equals_count = url.count("=")
-    question_count = url.count("?")
-    ampersand_count = url.count("&")
+    digits = sum(char.isdigit() for char in normalized_url)
+
+    digit_ratio = (
+        digits / url_length if url_length > 0 else 0
+    )
+
+    equals_count = normalized_url.count("=")
+    question_count = normalized_url.count("?")
+    ampersand_count = normalized_url.count("&")
 
     other_special_chars = sum(
         not char.isalnum() and char not in "://.?&=#"
-        for char in url
+        for char in normalized_url
     )
 
     special_char_ratio = (
-        sum(not char.isalnum() for char in url) / url_length
-        if url_length else 0
+        sum(not char.isalnum() for char in normalized_url)
+        / url_length
+        if url_length > 0 else 0
     )
 
-    # HTTPS
     is_https = 1 if parsed.scheme.lower() == "https" else 0
 
-    # Feature dictionary
     features = {
         "URLLength": url_length,
         "DomainLength": domain_length,
@@ -94,7 +98,7 @@ def extract_url_features(url: str) -> dict:
         "NoOfAmpersandInURL": ampersand_count,
         "NoOfOtherSpecialCharsInURL": other_special_chars,
         "SpacialCharRatioInURL": special_char_ratio,
-        "IsHTTPS": is_https,
+        "IsHTTPS": is_https
     }
 
     return features

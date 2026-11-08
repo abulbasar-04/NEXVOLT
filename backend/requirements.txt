@@ -27,3 +27,4 @@ typing-inspection==0.4.2
 typing_extensions==4.16.0
 tzdata==2026.6
 uvicorn==0.39.0
+requests

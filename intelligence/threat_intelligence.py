@@ -1,15 +1,20 @@
 import os
 import requests
+from dotenv import load_dotenv
 from urllib.parse import urlparse
 
-URLHAUS_API = "https://urlhaus-api.abuse.ch/v1/url/"
+ENV_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../backend/.env")
+)
 
+load_dotenv(ENV_PATH)
+
+URLHAUS_API = "https://urlhaus-api.abuse.ch/v1/url/"
 URLHAUS_AUTH_KEY = os.getenv("URLHAUS_AUTH_KEY")
 
 
 def validate_url(url: str) -> bool:
     parsed = urlparse(url)
-
     return (
         parsed.scheme in ("http", "https")
         and bool(parsed.hostname)
@@ -34,7 +39,6 @@ def check_urlhaus(url: str) -> dict:
             "error": "URLHAUS_AUTH_KEY is not configured."
         }
 
-
     try:
         response = requests.post(
             URLHAUS_API,
@@ -42,7 +46,6 @@ def check_urlhaus(url: str) -> dict:
             headers={"Auth-Key": URLHAUS_AUTH_KEY},
             timeout=15
         )
-
         response.raise_for_status()
         data = response.json()
 
@@ -62,7 +65,6 @@ def check_urlhaus(url: str) -> dict:
             "error": "URLhaus returned invalid JSON."
         }
 
-
     query_status = data.get("query_status")
 
     if query_status == "ok":
@@ -79,7 +81,7 @@ def check_urlhaus(url: str) -> dict:
             "reference": data.get("urlhaus_reference")
         }
 
-    elif query_status == "no_results":
+    if query_status == "no_results":
         return {
             "source": "URLhaus",
             "found": False,
