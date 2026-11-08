@@ -19,7 +19,7 @@ def run_full_scan(url: str) -> dict:
     # 2. Rule-Based Phishing Detection
     phishing_result = detect_phishing(url)
 
-    # 3. Threat Intelligence (URLhaus)
+    # 3. Threat Intelligence
     threat_result = check_threat_intelligence(url)
 
     # 4. SSL Certificate Analysis
