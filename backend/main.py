@@ -7,15 +7,16 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
+from urllib.parse import urlparse
+import ipaddress
+import re
+
+import dns.resolver
+import dns.exception
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
-from urllib.parse import urlparse
-import ipaddress
-import re
-import dns.resolver
-import dns.exception
 
 from services.ml_predictor import predict_url
 from services.scan_service import run_full_scan
@@ -26,15 +27,47 @@ from services import community_reports
 logger = logging.getLogger(__name__)
 
 
+# =========================================================
+# ENVIRONMENT CONFIGURATION
+# =========================================================
+
+FRONTEND_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv(
+        "FRONTEND_ORIGINS",
+        "https://nexvolt-theta.vercel.app",
+    ).split(",")
+    if origin.strip()
+]
+
+ALLOWED_ORIGINS = list(dict.fromkeys([
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    *FRONTEND_ORIGINS,
+]))
+
+
+# =========================================================
+# CERTIFICATE MONITOR SCHEDULER
+# =========================================================
+
 def _certificate_monitor_interval() -> int:
     default_interval = 6 * 60 * 60
+
     try:
-        configured = int(os.getenv("CERTIFICATE_MONITOR_INTERVAL_SECONDS", default_interval))
+        configured = int(
+            os.getenv(
+                "CERTIFICATE_MONITOR_INTERVAL_SECONDS",
+                default_interval,
+            )
+        )
     except (TypeError, ValueError):
         logger.warning(
-            "Invalid CERTIFICATE_MONITOR_INTERVAL_SECONDS; using the six-hour default."
+            "Invalid CERTIFICATE_MONITOR_INTERVAL_SECONDS; "
+            "using the six-hour default."
         )
         configured = default_interval
+
     return max(300, min(configured, 30 * 24 * 60 * 60))
 
 
@@ -44,20 +77,30 @@ CERTIFICATE_MONITOR_INTERVAL_SECONDS = _certificate_monitor_interval()
 async def _certificate_monitor_scheduler():
     while True:
         await asyncio.sleep(CERTIFICATE_MONITOR_INTERVAL_SECONDS)
+
         try:
-            await asyncio.to_thread(certificate_monitor.check_all_monitored_domains)
+            await asyncio.to_thread(
+                certificate_monitor.check_all_monitored_domains
+            )
         except Exception:
-            logger.exception("Scheduled certificate monitoring run failed.")
+            logger.exception(
+                "Scheduled certificate monitoring run failed."
+            )
 
 
 @asynccontextmanager
 async def lifespan(application):
-    task = asyncio.create_task(_certificate_monitor_scheduler())
+    task = asyncio.create_task(
+        _certificate_monitor_scheduler()
+    )
+
     application.state.certificate_monitor_task = task
+
     try:
         yield
     finally:
         task.cancel()
+
         try:
             await task
         except asyncio.CancelledError:
@@ -77,7 +120,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -142,10 +185,16 @@ def scan_url(request: ScanRequest):
     url = request.url.strip()
 
     if not url:
-        raise HTTPException(status_code=400, detail="URL cannot be empty")
+        raise HTTPException(
+            status_code=400,
+            detail="URL cannot be empty",
+        )
 
     if len(url) > 2048:
-        raise HTTPException(status_code=400, detail="URL is too long")
+        raise HTTPException(
+            status_code=400,
+            detail="URL is too long",
+        )
 
     try:
         parsed = urlparse(url)
@@ -162,18 +211,27 @@ def scan_url(request: ScanRequest):
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail="Enter a valid HTTP or HTTPS URL"
+            detail="Enter a valid HTTP or HTTPS URL",
         )
 
     return run_full_scan(url)
 
 
+# =========================================================
+# COMMUNITY REPORT COOKIE
+# =========================================================
+
 def _set_reporter_cookie(response: Response, token: str):
-    secure_cookie = os.getenv("COMMUNITY_REPORT_COOKIE_SECURE", "").lower() in {
+
+    secure_cookie = os.getenv(
+        "COMMUNITY_REPORT_COOKIE_SECURE",
+        "",
+    ).lower() in {
         "1",
         "true",
         "yes",
     }
+
     response.set_cookie(
         key=community_reports.REPORTER_COOKIE_NAME,
         value=token,
@@ -185,38 +243,87 @@ def _set_reporter_cookie(response: Response, token: str):
     )
 
 
+# =========================================================
+# COMMUNITY REPORT ADMIN AUTHORIZATION
+# =========================================================
+
 def _require_report_admin(request: Request):
-    configured_token = os.getenv("COMMUNITY_REPORT_ADMIN_TOKEN", "")
-    if not configured_token.isascii() or not 32 <= len(configured_token) <= 256:
+
+    configured_token = os.getenv(
+        "COMMUNITY_REPORT_ADMIN_TOKEN",
+        "",
+    )
+
+    if (
+        not configured_token.isascii()
+        or not 32 <= len(configured_token) <= 256
+    ):
         raise HTTPException(
             status_code=503,
-            detail="Community report moderation is not configured on this server.",
+            detail=(
+                "Community report moderation is not "
+                "configured on this server."
+            ),
         )
-    authorization = request.headers.get("authorization", "")
+
+    authorization = request.headers.get(
+        "authorization",
+        "",
+    )
+
     scheme, separator, supplied_token = authorization.partition(" ")
+
     if (
         not separator
         or scheme.lower() != "bearer"
         or not supplied_token.isascii()
         or len(supplied_token) > 256
-        or not hmac.compare_digest(supplied_token, configured_token)
+        or not hmac.compare_digest(
+            supplied_token,
+            configured_token,
+        )
     ):
-        raise HTTPException(status_code=401, detail="Administrator authorization required.")
+        raise HTTPException(
+            status_code=401,
+            detail="Administrator authorization required.",
+        )
 
+
+# =========================================================
+# COMMUNITY REPORT SESSION
+# =========================================================
 
 @app.get("/api/community-reports/session")
-def community_report_session(request: Request, response: Response):
-    _reporter_ref, token, _is_new = community_reports.ensure_reporter(request)
+def community_report_session(
+    request: Request,
+    response: Response,
+):
+
+    _reporter_ref, token, _is_new = (
+        community_reports.ensure_reporter(request)
+    )
+
     _set_reporter_cookie(response, token)
+
     return {"ready": True}
 
+
+# =========================================================
+# COMMUNITY REPORT PUBLIC FEED
+# =========================================================
 
 @app.get("/api/community-reports")
 def get_community_reports(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=10000),
 ):
-    return {"reports": community_reports.list_public_reports(limit, offset)}
+
+    return {
+        "reports": community_reports.list_public_reports(
+            limit,
+            offset,
+        )
+    }
 
 
 @app.get("/api/community-reports/verified")
@@ -224,8 +331,18 @@ def get_verified_community_reports(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=10000),
 ):
-    return {"reports": community_reports.list_verified_reports(limit, offset)}
 
+    return {
+        "reports": community_reports.list_verified_reports(
+            limit,
+            offset,
+        )
+    }
+
+
+# =========================================================
+# COMMUNITY REPORT SUBMISSION
+# =========================================================
 
 @app.post("/api/community-reports", status_code=201)
 def submit_community_report(
@@ -233,24 +350,44 @@ def submit_community_report(
     request: Request,
     response: Response,
 ):
-    origin = request.headers.get("origin")
-    if origin and origin not in {
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    }:
-        raise HTTPException(status_code=403, detail="Report submissions from this origin are not allowed.")
 
-    client_key = request.client.host if request.client else "unknown"
-    allowed, retry_after = community_reports.allow_submission(client_key)
+    origin = request.headers.get("origin")
+
+    if origin and origin not in ALLOWED_ORIGINS:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Report submissions from this origin "
+                "are not allowed."
+            ),
+        )
+
+    client_key = (
+        request.client.host
+        if request.client
+        else "unknown"
+    )
+
+    allowed, retry_after = (
+        community_reports.allow_submission(client_key)
+    )
+
     if not allowed:
         raise HTTPException(
             status_code=429,
-            detail="Report submission rate limit reached. Try again later.",
+            detail=(
+                "Report submission rate limit reached. "
+                "Try again later."
+            ),
             headers={"Retry-After": str(retry_after)},
         )
 
-    reporter_ref, token, _is_new = community_reports.ensure_reporter(request)
+    reporter_ref, token, _is_new = (
+        community_reports.ensure_reporter(request)
+    )
+
     _set_reporter_cookie(response, token)
+
     try:
         return community_reports.submit_report(
             report.url,
@@ -258,11 +395,23 @@ def submit_community_report(
             report.evidence,
             reporter_ref,
         )
-    except community_reports.DuplicateReportError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
 
+    except community_reports.DuplicateReportError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+        ) from error
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
+
+# =========================================================
+# COMMUNITY REPORT ADMIN
+# =========================================================
 
 @app.get("/api/community-reports/admin")
 def get_admin_community_reports(
@@ -270,7 +419,9 @@ def get_admin_community_reports(
     status: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=200),
 ):
+
     _require_report_admin(request)
+
     try:
         return {
             "reports": community_reports.list_admin_reports(
@@ -278,8 +429,12 @@ def get_admin_community_reports(
                 limit=limit,
             )
         }
+
     except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
 
 
 @app.post("/api/community-reports/{report_id}/moderation")
@@ -288,26 +443,50 @@ def moderate_community_report(
     moderation: CommunityModerationRequest,
     request: Request,
 ):
+
     _require_report_admin(request)
+
     if report_id < 1:
-        raise HTTPException(status_code=404, detail="Community report not found.")
+        raise HTTPException(
+            status_code=404,
+            detail="Community report not found.",
+        )
+
     try:
         result = community_reports.moderate_report(
             report_id,
             moderation.status,
             moderation.note,
         )
+
     except community_reports.ModerationConflictError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+        ) from error
+
     except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
     if result is None:
-        raise HTTPException(status_code=404, detail="Community report not found.")
+        raise HTTPException(
+            status_code=404,
+            detail="Community report not found.",
+        )
+
     return result
 
 
+# =========================================================
+# CERTIFICATE MONITORING
+# =========================================================
+
 @app.get("/api/certificate-monitoring")
 def get_certificate_monitors():
+
     return {
         "domains": certificate_monitor.list_monitored_domains(),
         "interval_seconds": CERTIFICATE_MONITOR_INTERVAL_SECONDS,
@@ -315,41 +494,77 @@ def get_certificate_monitors():
 
 
 @app.post("/api/certificate-monitoring")
-def add_certificate_monitor(request: CertificateMonitorRequest):
+def add_certificate_monitor(
+    request: CertificateMonitorRequest,
+):
+
     try:
-        return certificate_monitor.add_monitored_domain(request.domain)
+        return certificate_monitor.add_monitored_domain(
+            request.domain
+        )
+
     except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
 
 
 @app.get("/api/certificate-monitoring/alerts")
 def get_certificate_monitor_alerts():
-    return {"alerts": certificate_monitor.list_certificate_alerts()}
+
+    return {
+        "alerts": certificate_monitor.list_certificate_alerts()
+    }
 
 
 @app.post("/api/certificate-monitoring/{domain_id}/check")
 def check_certificate_monitor(domain_id: int):
-    observation = certificate_monitor.check_domain(domain_id)
+
+    observation = certificate_monitor.check_domain(
+        domain_id
+    )
+
     if observation is None:
-        raise HTTPException(status_code=404, detail="Monitored domain not found.")
+        raise HTTPException(
+            status_code=404,
+            detail="Monitored domain not found.",
+        )
+
     return observation
 
 
 @app.get("/api/certificate-monitoring/{domain_id}/history")
 def get_certificate_monitor_history(domain_id: int):
-    history = certificate_monitor.get_domain_history(domain_id)
+
+    history = certificate_monitor.get_domain_history(
+        domain_id
+    )
+
     if history is None:
-        raise HTTPException(status_code=404, detail="Monitored domain not found.")
+        raise HTTPException(
+            status_code=404,
+            detail="Monitored domain not found.",
+        )
+
     return history
 
 
 @app.delete("/api/certificate-monitoring/{domain_id}")
 def remove_certificate_monitor(domain_id: int):
-    if not certificate_monitor.remove_monitored_domain(domain_id):
-        raise HTTPException(status_code=404, detail="Monitored domain not found.")
+
+    if not certificate_monitor.remove_monitored_domain(
+        domain_id
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="Monitored domain not found.",
+        )
+
     return {"removed": True}
 
 
+# =========================================================
 # DNS LOOKUP API
 # =========================================================
 
@@ -361,23 +576,19 @@ def dns_lookup(domain: str):
     if not domain or len(domain) > 253:
         raise HTTPException(
             status_code=400,
-            detail="Invalid domain"
+            detail="Invalid domain",
         )
 
     if "/" in domain or "://" in domain:
         raise HTTPException(
             status_code=400,
-            detail="Enter domain only, not a complete URL"
+            detail="Enter domain only, not a complete URL",
         )
 
-    # Domain format validation
-    if not re.fullmatch(
-        r"[a-z0-9.-]+",
-        domain
-    ):
+    if not re.fullmatch(r"[a-z0-9.-]+", domain):
         raise HTTPException(
             status_code=400,
-            detail="Invalid domain format"
+            detail="Invalid domain format",
         )
 
     records = {}
@@ -393,7 +604,6 @@ def dns_lookup(domain: str):
     for record_type in record_types:
 
         try:
-
             answers = dns.resolver.resolve(
                 domain,
                 record_type,
@@ -406,10 +616,9 @@ def dns_lookup(domain: str):
             ]
 
         except dns.resolver.NXDOMAIN:
-
             raise HTTPException(
                 status_code=404,
-                detail="Domain does not exist"
+                detail="Domain does not exist",
             )
 
         except (
@@ -417,11 +626,9 @@ def dns_lookup(domain: str):
             dns.resolver.NoNameservers,
             dns.exception.Timeout,
         ):
-
             records[record_type] = []
 
         except Exception:
-
             records[record_type] = []
 
     return {
