@@ -42,3 +42,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+
+# Experimental ML models and backups
+backend/services/phishing_model_backup.pkl
+backend/services/phishing_model_v2_candidate.pkl

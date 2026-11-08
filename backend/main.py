@@ -9,6 +9,7 @@ import dns.resolver
 import dns.exception
 
 from services.ml_predictor import predict_url
+from services.scan_service import run_full_scan
 
 
 # =========================================================
@@ -68,21 +69,12 @@ def scan_url(request: ScanRequest):
 
     url = request.url.strip()
 
-    # Empty URL validation
     if not url:
-        raise HTTPException(
-            status_code=400,
-            detail="URL cannot be empty"
-        )
+        raise HTTPException(status_code=400, detail="URL cannot be empty")
 
-    # URL length validation
     if len(url) > 2048:
-        raise HTTPException(
-            status_code=400,
-            detail="URL is too long"
-        )
+        raise HTTPException(status_code=400, detail="URL is too long")
 
-    # URL format validation
     try:
         parsed = urlparse(url)
 
@@ -92,7 +84,8 @@ def scan_url(request: ScanRequest):
         if not parsed.hostname:
             raise ValueError("Missing hostname")
 
-        host = parsed.hostname.lower()
+        if parsed.username or parsed.password:
+            raise ValueError("Credentials are not allowed")
 
     except ValueError:
         raise HTTPException(
@@ -100,171 +93,9 @@ def scan_url(request: ScanRequest):
             detail="Enter a valid HTTP or HTTPS URL"
         )
 
-    # =====================================================
-    # HEURISTIC ANALYSIS
-    # =====================================================
-
-    score = 0
-    findings = []
-
-    def add_finding(points, message):
-        nonlocal score
-        score += points
-        findings.append(message)
-
-    # HTTP security check
-    if parsed.scheme == "http":
-        add_finding(
-            15,
-            "Website uses HTTP instead of HTTPS."
-        )
-
-    # IP address check
-    try:
-        ipaddress.ip_address(host)
-
-        add_finding(
-            25,
-            "Website uses an IP address instead of a domain."
-        )
-
-    except ValueError:
-        pass
-
-    # Suspicious hostname keywords
-    suspicious_keywords = [
-        "login",
-        "verify",
-        "verification",
-        "password",
-        "account",
-        "secure",
-        "update",
-        "banking",
-        "wallet",
-        "signin",
-        "confirm",
-    ]
-
-    for keyword in suspicious_keywords:
-
-        if re.search(
-            rf"(^|[.-]){re.escape(keyword)}([.-]|$)",
-            host
-        ):
-            add_finding(
-                10,
-                f"Suspicious keyword detected: {keyword}"
-            )
-            break
-
-    # URL shortener check
-    shorteners = [
-        "bit.ly",
-        "tinyurl.com",
-        "t.co",
-        "is.gd",
-        "cutt.ly",
-        "shorturl.at",
-    ]
-
-    if host in shorteners:
-        add_finding(
-            20,
-            "URL uses a link-shortening service."
-        )
-
-    # Subdomain check
-    if len(host.split(".")) > 4:
-        add_finding(
-            15,
-            "Website contains an unusually large number of subdomains."
-        )
-
-    # @ symbol check
-    if "@" in url:
-        add_finding(
-            20,
-            "URL contains an @ symbol that may hide its real destination."
-        )
-
-    # Punycode check
-    if "xn--" in host:
-        add_finding(
-            20,
-            "Domain contains Punycode encoding."
-        )
-
-    # Hyphen check
-    if host.count("-") >= 3:
-        add_finding(
-            10,
-            "Domain contains multiple hyphens."
-        )
-
-    # Dangerous file extension check
-    dangerous_extensions = (
-        ".exe",
-        ".apk",
-        ".scr",
-        ".bat",
-        ".cmd",
-    )
-
-    if parsed.path.lower().endswith(dangerous_extensions):
-        add_finding(
-            25,
-            "URL points to a potentially dangerous executable file."
-        )
-
-    # Heuristic risk score
-    score = min(score, 100)
-
-    if score >= 60:
-        verdict = "Dangerous"
-
-    elif score >= 30:
-        verdict = "Suspicious"
-
-    else:
-        verdict = "Low Risk"
-
-    # =====================================================
-    # MACHINE LEARNING PREDICTION
-    # =====================================================
-
-    ml_result = predict_url(url)
-
-    # =====================================================
-    # FINAL SCAN RESPONSE
-    # =====================================================
-
-    return {
-        "url": url,
-
-        "risk_score": score,
-        "verdict": verdict,
-        "findings": findings,
-
-        "ml_prediction": ml_result,
-
-        "analysis": {
-            "scheme": parsed.scheme,
-            "domain": host,
-            "uses_https": parsed.scheme == "https",
-        },
-
-        "message": "URL heuristic and ML analysis completed.",
-
-        "note": (
-            "Preliminary assessment based on heuristic analysis "
-            "and machine learning. This is not a definitive "
-            "phishing detection."
-        ),
-    }
+    return run_full_scan(url)
 
 
-# =========================================================
 # DNS LOOKUP API
 # =========================================================
 
