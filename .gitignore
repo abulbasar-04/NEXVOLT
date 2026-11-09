@@ -52,3 +52,6 @@ backend/services/phishing_model_backup.pkl
 backend/services/phishing_model_v2_candidate.pkl
 backend/venv*/
 backend/requirements.txt.backup
+
+# Local backup files
+*.backup
