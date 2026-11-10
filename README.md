@@ -1,147 +1,302 @@
 # CYBERNOVA
 
-CYBERNOVA is a cybersecurity intelligence demo for assessing suspicious URLs. It combines a trained phishing classifier, URL heuristics, third-party and community threat reports, TLS certificate inspection, and passive website checks into an explainable risk score and printable report.
+**AI-Powered Web Trust Intelligence Platform**
 
-## Problem and scope
+CYBERNOVA is a cybersecurity intelligence platform designed to assess suspicious URLs through multiple independent security signals. It combines machine-learning phishing detection, URL heuristics, threat intelligence, TLS certificate analysis, and passive website security checks into an explainable risk assessment.
 
-People often need to decide whether a link merits closer inspection before opening it. CYBERNOVA gathers several independent signals and explains what was and was not assessed. Its results are triage assistance, not a guarantee of safety, a malware sandbox, or a substitute for security review.
+> **Disclaimer:** CYBERNOVA is a security triage and educational demonstration tool. It does not guarantee that a website is safe or malicious.
+
+## Overview
+
+Users frequently encounter suspicious links and need evidence before deciding whether to trust them. CYBERNOVA brings multiple security signals together, explains its findings, and generates a printable security report.
+
+The platform emphasizes:
+- Explainable security findings
+- Independent analysis components
+- Transparent assessment coverage
+- Conservative risk scoring
+- Explicit reporting of unavailable intelligence sources
 
 ## Architecture
 
-| Area | Technology | Responsibility |
-|---|---|---|
-| Frontend | React, Vite, JavaScript, CSS | Responsive dashboard, scanner, history, intelligence pages, monitoring, reports |
-| API | Python, FastAPI, Pydantic | Scan orchestration, validation, health, DNS, community report and certificate-monitoring endpoints |
-| Analysis | scikit-learn, Python security services | Model inference, URL rules, threat-feed aggregation, certificate and passive website assessment, risk scoring |
-| Persistence | SQLite | Community reports and certificate observations; scan history is stored in browser local storage |
+```mermaid
+flowchart TD
+    A[React Frontend] --> B[FastAPI Backend]
+    B --> C[Scan Service]
+    C --> D[ML Phishing Detector]
+    C --> E[URL Heuristics]
+    C --> F[Threat Intelligence]
+    C --> G[TLS Certificate Analysis]
+    C --> H[Passive Website Scanner]
+    D --> I[Risk Engine]
+    E --> I
+    F --> I
+    G --> I
+    H --> I
+    I --> J[Security Assessment Report]
+    B --> K[Community Reports]
+    B --> L[Certificate Monitoring]
+    K --> M[(SQLite)]
+    L --> N[(SQLite)]
+```
 
-The scan pipeline runs analysis components independently. The risk engine combines available, valid component scores and normalizes their weights; unavailable components are not treated as safe. Certificate change monitoring is historical and is not included in per-scan risk scoring.
+### Technology Stack
+
+| Component | Technology |
+|---|---|
+| Frontend | React, Vite, JavaScript, CSS |
+| Backend API | Python, FastAPI, Pydantic |
+| Machine Learning | scikit-learn |
+| Security Analysis | Python security services |
+| Persistence | SQLite |
+| Testing | pytest |
+| Deployment | Vercel |
 
 ## Features
 
-- Unified risk score, category, derived trust score, component coverage, findings, and recommendations.
-- Trained-model phishing probability and URL rule-based findings.
-- URLhaus, PhishTank, and OpenPhish lookups where configured and reachable, plus conservative community-report signals.
-- TLS certificate validity, hostname and chain checks, protocol/cipher assessment, and supported trust lookups.
-- Passive HTTP security-header, redirect, cookie, HTTPS-enforcement, and bounded static mixed-content checks.
-- Certificate fingerprint baselines, change history, alerts, and scheduled checks.
-- Anonymous/pseudonymous community reports with public privacy filtering and optional administrator moderation.
-- Per-scan security report with browser Print / Save as PDF.
-- Browser-local scan history and responsive navigation.
+### URL Security Analysis
+- ML-based phishing probability
+- URL heuristic analysis
+- Explainable risk score and trust score
+- Component availability and assessment coverage
+- Security findings and recommendations
 
-External feeds and network checks can be unavailable or time out. A source no-match is not proof of safety. Community submissions are not independently verified identities.
+### Threat Intelligence
+- URLhaus integration
+- PhishTank integration
+- OpenPhish feed lookup
+- Community threat-report signals
+- Source-specific results and availability reporting
+
+### Website Security Assessment
+- TLS certificate validity and hostname checks
+- Certificate chain and protocol assessment
+- HTTP security-header analysis
+- Redirect-chain inspection
+- Cookie security checks
+- HTTPS enforcement
+- Bounded static mixed-content checks
+
+### Certificate Monitoring
+- Certificate fingerprint baselines
+- Certificate change detection
+- Historical observations
+- Change severity and recommendations
+- Scheduled certificate checks
+
+### Community Reports
+- Anonymous/pseudonymous report submission
+- URL normalization and duplicate protection
+- Moderation workflow
+- Public privacy filtering
+- Community threat signals
+
+### Reports and Dashboard
+- Security assessment dashboard
+- Trust dashboard
+- Scan history
+- Printable security reports
+- Browser Print / Save as PDF
+- Responsive navigation
+
+## Project Structure
+
+```text
+CYBERNOVA/
+├── backend/
+│   ├── api/
+│   ├── data/
+│   ├── intelligence/
+│   ├── schemas/
+│   ├── security_engine/
+│   ├── services/
+│   ├── main.py
+│   ├── requirements.txt
+│   └── requirements-dev.txt
+├── frontend/
+│   ├── public/
+│   ├── src/
+│   │   ├── components/
+│   │   ├── pages/
+│   │   ├── utils/
+│   │   ├── App.jsx
+│   │   ├── api.js
+│   │   └── styles.css
+│   ├── package.json
+│   └── vite.config.js
+├── tests/
+├── .gitignore
+└── README.md
+```
 
 ## Requirements
 
-- Python 3.9 or later (the current backend environment is Python 3.9).
-- Node.js and npm.
-- Network access for live website, DNS, certificate, and configured threat-feed checks. Unit tests mock external services and do not require live malicious URLs.
-- Docker is not required.
+- Python 3.9 or later
+- Node.js and npm
+- Network access for live DNS, website, TLS, and threat intelligence checks
 
-## Setup
+Docker is not required for local development.
 
-From the repository root:
+## Local Installation
 
-```sh
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/abulbasar-04/NEXVOLT.git
+cd NEXVOLT
+```
+
+### 2. Set up the backend
+
+```bash
 python3 -m venv backend/venv
 source backend/venv/bin/activate
+
 python -m pip install --upgrade pip
 python -m pip install -r backend/requirements.txt
 python -m pip install -r backend/requirements-dev.txt
+
 cp backend/.env.example backend/.env
 ```
 
-Edit `backend/.env` only if you need optional feed credentials or non-default settings. Do not commit `.env` or paste credentials into source code. Defaults use SQLite files under `backend/data/`.
+Edit `backend/.env` only when optional credentials or custom settings are required.
 
-Install frontend dependencies:
+### 3. Set up the frontend
 
-```sh
+```bash
 cd frontend
 npm ci
 cd ..
 ```
 
-## Configuration and environment variables
+### 4. Start the backend
 
-`backend/intelligence/threat_intelligence.py` loads `backend/.env`; environment variables exported by the shell can also configure the backend. The Vite API URL is a frontend build-time setting.
+From the repository root:
 
-| Variable | Required | Default / behavior |
-|---|---:|---|
-| `URLHAUS_AUTH_KEY` | No | URLhaus source is unavailable when unset; obtain a key from the provider if you want this lookup enabled. |
-| `PHISHTANK_API_KEY` | No | PhishTank source is unavailable when unset; obtain an API key from the provider to enable it. |
-| `OPENPHISH_FEED_URL` | No | `https://openphish.com/feed.txt`; use the official HTTPS feed unless you intentionally operate a trusted alternative. |
-| `COMMUNITY_REPORT_ADMIN_TOKEN` | No | Moderation is disabled unless set to a high-entropy ASCII token (32–256 characters). Keep it secret. |
-| `COMMUNITY_REPORT_COOKIE_SECURE` | No | Defaults to `false` for local HTTP; set to `true` when the API is served over HTTPS. |
-| `COMMUNITY_REPORT_DATABASE` | No | `backend/data/community_reports.sqlite3`. |
-| `CERTIFICATE_MONITOR_DATABASE` | No | `backend/data/certificate_monitoring.sqlite3`. |
-| `CERTIFICATE_MONITOR_INTERVAL_SECONDS` | No | `21600` (6 hours), bounded by the service between 5 minutes and 30 days. |
-| `VITE_API_BASE_URL` | No | `http://127.0.0.1:8000`; set before `npm run dev` if the API is elsewhere. |
-
-Never put backend credentials in `VITE_*` variables: Vite values are shipped to the browser. The example environment file contains no credentials.
-
-## Start the application
-
-Run the API from the repository root:
-
-```sh
+```bash
 source backend/venv/bin/activate
 uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-In another terminal, start the frontend:
+### 5. Start the frontend
 
-```sh
-cd frontend
+Open another terminal:
+
+```bash
+cd NEXVOLT/frontend
 npm run dev
 ```
 
-Open `http://localhost:5173`. The API health check and interactive API docs are at `http://127.0.0.1:8000/api/health` and `http://127.0.0.1:8000/docs`. The browser only accepts a backend that identifies itself as CYBERNOVA; if an older server is occupying port 8000, stop that server and start this checkout's API.
+Open:
 
-To use a different local API port:
+- Frontend: http://localhost:5173
+- API health: http://127.0.0.1:8000/api/health
+- API documentation: http://127.0.0.1:8000/docs
 
-```sh
-VITE_API_BASE_URL=http://127.0.0.1:8001 npm run dev
+## Configuration
+
+Backend configuration is managed through environment variables and `backend/.env`.
+
+| Variable | Purpose |
+|---|---|
+| `URLHAUS_AUTH_KEY` | Optional URLhaus authentication |
+| `PHISHTANK_API_KEY` | Optional PhishTank API access |
+| `OPENPHISH_FEED_URL` | OpenPhish feed URL |
+| `COMMUNITY_REPORT_ADMIN_TOKEN` | Community moderation authentication |
+| `COMMUNITY_REPORT_COOKIE_SECURE` | Secure reporter-cookie configuration |
+| `COMMUNITY_REPORT_DATABASE` | Community-report SQLite database path |
+| `CERTIFICATE_MONITOR_DATABASE` | Certificate-monitoring SQLite database path |
+| `CERTIFICATE_MONITOR_INTERVAL_SECONDS` | Certificate monitoring interval |
+| `VITE_API_BASE_URL` | Frontend API base URL |
+
+The default local database paths are under `backend/data/`.
+
+**Never commit `.env` files or expose backend credentials through `VITE_*` variables.** Vite environment variables are delivered to the browser.
+
+## Testing
+
+Run the backend tests:
+
+```bash
+source backend/venv/bin/activate
+PYTHONPATH=backend python -m pytest -q
 ```
 
-The development CORS allowlist is limited to `localhost:5173` and `127.0.0.1:5173`. Review and configure origins, HTTPS, authentication, rate limiting, and deployment secrets before exposing the API beyond a local demo.
+Additional checks:
 
-## Test and build
-
-From the repository root:
-
-```sh
-source backend/venv/bin/activate
-PYTHONPATH=backend python -m pytest -q tests
+```bash
 python -m compileall -q backend tests
 git diff --check
 ```
 
 Build the frontend:
 
-```sh
+```bash
 cd frontend
 npm run build
 ```
 
-The backend tests mock external intelligence and network responses; they should not scan real malicious URLs.
+The automated tests mock external intelligence and network responses. They do not require live malicious URLs.
 
-## Demo workflow
+## Deployment
 
-1. Start the API and frontend using the commands above. Confirm the sidebar reports the CYBERNOVA API as connected.
-2. Open **URL scanner** and submit `https://example.com/`, a harmless example domain. The scan performs live passive checks and uses whatever threat feeds are configured; availability and results may vary with network access.
-3. Review the risk score, the per-component availability, source results, certificate and website findings. Emphasize that a low score or no threat-feed match is not a safety guarantee.
-4. Open **Trust dashboard**, then **Security report**. Use **Print / Save as PDF** to demonstrate browser-based report export.
-5. Open **Certificate monitoring** and add `example.com` only if you want to demonstrate a real certificate baseline. This makes an outbound TLS connection and stores an observation in the configured SQLite database; remove the monitor after the demo if appropriate.
-6. Optionally submit a community-demo report for `https://example.org/cybernova-demo-review` using category `other` and evidence such as “Harmless demo submission; no allegation of malicious activity.” This stores a local unverified community report; do not describe the example URL as malicious. Moderation is available only if an administrator token was configured privately.
+### Frontend
 
-For a fully deterministic presentation, use mocked responses in the existing tests rather than claiming that a live provider will return a particular result. Do not use real credentials, session links, customer URLs, or malicious URLs in the demo.
+- Live frontend: https://nexvolt-theta.vercel.app
+- Framework: Vite / React
+- Configure `VITE_API_BASE_URL` with the deployed backend URL before building.
 
-## Known limitations and safety
+### Backend
 
-- CYBERNOVA is a local, single-user hackathon application, not a production multi-tenant service. Scan and certificate-monitoring endpoints do not implement user authentication. Bind the backend to loopback for a local demo; do not expose it publicly without adding appropriate authentication and abuse controls.
-- Community moderation uses a shared bearer token, not individual administrator accounts. Report submission rate limiting is in-memory and per process, so it is not a distributed abuse-control mechanism.
-- SQLite is suitable for the local demo. The certificate scheduler runs inside the API process; use one worker per shared monitoring database to avoid duplicate scheduled checks. SQLite lock timeouts do not replace a production database or distributed scheduler.
-- Website assessment is passive: it does not execute JavaScript, authenticate, submit forms, or inspect beyond the configured response sample. DNS resolver-level timeouts depend on the host operating system.
-- Threat providers have independent availability and credentials. Missing configuration, timeouts, and no-match responses must be shown as unavailable or source-specific no-match, not as proof of safety. The platform does not provide complete certificate-transparency, revocation, or global CA-distrust coverage.
-- Scan URLs, including their query strings, may be sent to configured third-party intelligence providers and are saved in this browser's local history. Do not submit URLs containing credentials, session tokens, personal information, or other confidential data. The printable report omits URL query strings and excludes reporter identity and private community evidence.
-- HTTPS alone does not establish that a site is legitimate. Automated risk and trust scores are evidence summaries, not guarantees that a website is safe or malicious.
+- Live API: https://nexvolt-br3o.vercel.app
+- API health: https://nexvolt-br3o.vercel.app/api/health
+- API documentation: https://nexvolt-br3o.vercel.app/docs
+
+The backend uses FastAPI and is deployed on Vercel.
+
+**Important:** SQLite is appropriate for local development and demonstrations. Vercel serverless filesystem storage is ephemeral and is not suitable for reliable persistent user data. Community reports and certificate-monitoring records require external persistent storage before production use.
+
+## Demo Workflow
+
+1. Start the backend and frontend.
+2. Confirm that the frontend reports the CYBERNOVA API as connected.
+3. Open the URL Scanner and test a harmless example domain such as `https://example.com/`.
+4. Review the risk score, component coverage, threat intelligence, certificate details, and website findings.
+5. Open the Trust Dashboard and Security Report.
+6. Demonstrate Print / Save as PDF.
+7. Optionally demonstrate certificate monitoring and community reporting using harmless example data.
+
+Live results depend on network access and external provider availability.
+
+## Security Considerations
+
+- CYBERNOVA is a local, single-user hackathon demonstration, not a production multi-tenant security service.
+- Backend scan and monitoring endpoints do not implement user authentication.
+- Do not expose the backend publicly without appropriate authentication, rate limiting, abuse prevention, and security controls.
+- Community moderation uses a shared bearer token.
+- Community submission rate limiting is in-memory and per process.
+- SQLite lock timeouts do not replace a production database.
+- The certificate scheduler runs within the API process; use one worker per shared monitoring database.
+- Website assessment is passive and does not execute JavaScript, authenticate, or submit forms.
+- Threat intelligence providers may be unavailable, return no matches, or time out.
+- Missing intelligence or a no-match result is not proof of safety.
+- URLs may be sent to configured third-party intelligence providers and stored in browser-local scan history.
+- Never submit URLs containing passwords, session tokens, personal information, or confidential data.
+- HTTPS does not guarantee that a website is legitimate.
+
+## Limitations
+
+CYBERNOVA does not provide:
+- A malware execution sandbox
+- Complete certificate-transparency or revocation coverage
+- Guaranteed detection of every phishing website
+- A guarantee that a website is safe
+- A substitute for professional security review
+
+## Project Status
+
+CYBERNOVA is an educational cybersecurity project demonstrating machine learning, threat intelligence integration, passive website analysis, API development, and security reporting.
+
+---
+
+**Built for cybersecurity learning, experimentation, and demonstration.**
