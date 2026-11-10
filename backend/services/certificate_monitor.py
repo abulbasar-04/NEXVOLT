@@ -1,24 +1,20 @@
+
 import json
 import logging
 import os
 import re
-import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+
+import psycopg
+from psycopg.rows import dict_row
 
 from intelligence.certificate_analyzer import analyze_certificate
 
-
 logger = logging.getLogger(__name__)
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-DATABASE_PATH = Path(
-    os.getenv(
-        "CERTIFICATE_MONITOR_DATABASE",
-        str(BACKEND_DIR / "data" / "certificate_monitoring.sqlite3"),
-    )
-)
+
+DATABASE_URL = os.getenv("DATABASE_URL")
 _DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 MAX_MONITORED_DOMAINS = 100
@@ -39,72 +35,49 @@ RECOMMENDATIONS = {
 }
 
 
-def _now() -> str:
+def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
 def normalize_domain(value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("Enter a domain to monitor.")
+
     candidate = value.strip()
+
     if (
         "://" in candidate
         or any(character in candidate for character in "/\\@:#?")
         or candidate.endswith(".")
     ):
         raise ValueError("Enter a domain name only, without a URL, port, or path.")
+
     try:
         domain = candidate.encode("idna").decode("ascii").lower()
     except UnicodeError as error:
         raise ValueError("Enter a valid internationalized domain name.") from error
+
     if len(domain) > 253:
         raise ValueError("Domain name is too long.")
+
     labels = domain.split(".")
-    if len(labels) < 2 or any(not _DOMAIN_LABEL.fullmatch(label) for label in labels):
+    if len(labels) < 2 or any(
+        not _DOMAIN_LABEL.fullmatch(label) for label in labels
+    ):
         raise ValueError("Enter a fully qualified domain name.")
+
     return domain
 
 
 def _connect():
-    path = Path(DATABASE_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(str(path), timeout=10)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA busy_timeout = 10000")
-    connection.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS monitored_domains (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            domain TEXT NOT NULL UNIQUE,
-            created_at TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            last_checked_at TEXT,
-            latest_status TEXT
-        );
-        CREATE TABLE IF NOT EXISTS certificate_observations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            domain_id INTEGER NOT NULL REFERENCES monitored_domains(id) ON DELETE CASCADE,
-            observed_at TEXT NOT NULL,
-            status TEXT NOT NULL,
-            fingerprint TEXT,
-            issuer_json TEXT,
-            subject_json TEXT,
-            serial_number TEXT,
-            public_key_json TEXT,
-            not_before TEXT,
-            expires_at TEXT,
-            san_domains_json TEXT,
-            change_type TEXT NOT NULL,
-            severity TEXT,
-            evidence_json TEXT NOT NULL,
-            recommendation TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_certificate_observations_domain_time
-            ON certificate_observations(domain_id, observed_at DESC);
-        """
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured.")
+
+    return psycopg.connect(
+        DATABASE_URL,
+        connect_timeout=15,
+        row_factory=dict_row,
     )
-    return connection
 
 
 @contextmanager
@@ -121,7 +94,11 @@ def _database():
 
 
 def _json_value(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":")) if value is not None else None
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":"))
+        if value is not None
+        else None
+    )
 
 
 def _decode_json(value, fallback=None):
@@ -137,10 +114,13 @@ def _decode_json(value, fallback=None):
 def _observation(row):
     if row is None:
         return None
+
     return {
         "id": row["id"],
         "domain_id": row["domain_id"],
-        "observed_at": row["observed_at"],
+        "observed_at": row["observed_at"].isoformat()
+        if isinstance(row["observed_at"], datetime)
+        else row["observed_at"],
         "status": row["status"],
         "sha256_fingerprint": row["fingerprint"],
         "issuer": _decode_json(row["issuer_json"]),
@@ -160,12 +140,15 @@ def _observation(row):
 def _latest_observation(connection, domain_id):
     row = connection.execute(
         """
-        SELECT * FROM certificate_observations
-        WHERE domain_id = ?
-        ORDER BY id DESC LIMIT 1
+        SELECT *
+        FROM certificate_observations
+        WHERE domain_id = %s
+        ORDER BY id DESC
+        LIMIT 1
         """,
         (domain_id,),
     ).fetchone()
+
     return _observation(row)
 
 
@@ -173,9 +156,13 @@ def _domain_record(connection, row):
     return {
         "id": row["id"],
         "domain": row["domain"],
-        "created_at": row["created_at"],
-        "last_checked_at": row["last_checked_at"],
-        "latest_status": row["latest_status"] or "pending",
+        "created_at": row["created_at"].isoformat()
+        if isinstance(row["created_at"], datetime)
+        else row["created_at"],
+        "last_checked_at": row["last_checked_at"].isoformat()
+        if isinstance(row["last_checked_at"], datetime)
+        else row["last_checked_at"],
+        "latest_status": row.get("latest_status") or "pending",
         "latest_observation": _latest_observation(connection, row["id"]),
     }
 
@@ -183,31 +170,45 @@ def _domain_record(connection, row):
 def list_monitored_domains():
     with _database() as connection:
         rows = connection.execute(
-            "SELECT * FROM monitored_domains WHERE enabled = 1 ORDER BY domain"
+            """
+            SELECT *
+            FROM monitored_domains
+            WHERE enabled = TRUE
+            ORDER BY domain
+            """
         ).fetchall()
+
         return [_domain_record(connection, row) for row in rows]
 
 
 def get_monitored_domain(domain_id: int):
     with _database() as connection:
         row = connection.execute(
-            "SELECT * FROM monitored_domains WHERE id = ? AND enabled = 1",
+            """
+            SELECT *
+            FROM monitored_domains
+            WHERE id = %s AND enabled = TRUE
+            """,
             (domain_id,),
         ).fetchone()
+
         return _domain_record(connection, row) if row else None
 
 
 def _sanitize_certificate(analysis: dict) -> dict:
     fingerprint = analysis.get("sha256_fingerprint")
+
     if isinstance(fingerprint, str):
         fingerprint = fingerprint.lower().replace(":", "").strip()
         if not _FINGERPRINT.fullmatch(fingerprint):
             fingerprint = None
     else:
         fingerprint = None
+
     sans = analysis.get("subject_alt_names")
     if not isinstance(sans, list):
         sans = []
+
     return {
         "status": str(analysis.get("status") or "unknown"),
         "fingerprint": fingerprint,
@@ -223,16 +224,19 @@ def _sanitize_certificate(analysis: dict) -> dict:
 
 def _san_set(values):
     normalized = set()
+
     for item in values or []:
         value = item.get("value") if isinstance(item, dict) else item
         if isinstance(value, str) and value:
             normalized.add(value.rstrip(".").casefold())
+
     return normalized
 
 
 def _date(value):
     if not isinstance(value, str) or not value:
         return None
+
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
@@ -248,35 +252,39 @@ def _classify_change(previous: dict, current: dict):
         f"Previous fingerprint: {previous['fingerprint']}.",
         f"Current fingerprint: {current['fingerprint']}.",
     ]
+
     issuer_changed = previous["issuer"] != current["issuer"]
     previous_sans = _san_set(previous["san_domains"])
     current_sans = _san_set(current["san_domains"])
     sans_changed = previous_sans != current_sans
+
     previous_key = previous.get("public_key") or {}
     current_key = current.get("public_key") or {}
     previous_key_fp = previous_key.get("sha256_fingerprint")
     current_key_fp = current_key.get("sha256_fingerprint")
+
     key_changed = (
         previous_key_fp != current_key_fp
         if previous_key_fp and current_key_fp
         else (
             previous_key.get("algorithm"),
             previous_key.get("key_size"),
-        ) != (
+        )
+        != (
             current_key.get("algorithm"),
             current_key.get("key_size"),
         )
     )
+
     old_expiry = _date(previous.get("expires_at"))
     new_expiry = _date(current.get("expires_at"))
     new_start = _date(current.get("not_before"))
-    validity_gap = bool(
-        old_expiry and new_start and new_start > old_expiry
-    )
+
+    validity_gap = bool(old_expiry and new_start and new_start > old_expiry)
     future_validity_start = bool(
-        new_start
-        and new_start > datetime.now(timezone.utc) + timedelta(days=7)
+        new_start and new_start > datetime.now(timezone.utc) + timedelta(days=7)
     )
+
     renewed = (
         not issuer_changed
         and not sans_changed
@@ -294,40 +302,61 @@ def _classify_change(previous: dict, current: dict):
             f"{json.dumps(previous['issuer'], sort_keys=True)} to "
             f"{json.dumps(current['issuer'], sort_keys=True)}."
         )
+
     if sans_changed:
         removed_sans = sorted(previous_sans - current_sans)
         added_sans = sorted(current_sans - previous_sans)
+
         if removed_sans:
             evidence.append(f"Removed SAN entries: {', '.join(removed_sans)}.")
         if added_sans:
             evidence.append(f"Added SAN entries: {', '.join(added_sans)}.")
+
     if key_changed:
         evidence.append("Certificate public key changed.")
+
     if previous.get("serial_number") != current.get("serial_number"):
         evidence.append("Certificate serial number changed.")
+
     if validity_gap:
-        evidence.append("The new certificate validity starts after the previous certificate expired.")
+        evidence.append(
+            "The new certificate validity starts after the previous certificate expired."
+        )
+
     if future_validity_start:
-        evidence.append("The new certificate validity starts more than seven days in the future.")
+        evidence.append(
+            "The new certificate validity starts more than seven days in the future."
+        )
+
     if (
         previous.get("not_before") != current.get("not_before")
         or previous.get("expires_at") != current.get("expires_at")
     ):
         evidence.append(
             "Validity dates changed from "
-            f"{previous.get('not_before') or 'unknown'} to {previous.get('expires_at') or 'unknown'} "
+            f"{previous.get('not_before') or 'unknown'} to "
+            f"{previous.get('expires_at') or 'unknown'} "
             "and "
-            f"{current.get('not_before') or 'unknown'} to {current.get('expires_at') or 'unknown'}."
+            f"{current.get('not_before') or 'unknown'} to "
+            f"{current.get('expires_at') or 'unknown'}."
         )
+
     if current["status"] != "valid":
         evidence.append(
-            f"The new certificate did not pass analyzer validation (status: {current['status']})."
+            "The new certificate did not pass analyzer validation "
+            f"(status: {current['status']})."
         )
-    if not renewed and not any((issuer_changed, sans_changed, key_changed, validity_gap)):
-        evidence.append("The change does not match the available normal-renewal indicators.")
+
+    if not renewed and not any(
+        (issuer_changed, sans_changed, key_changed, validity_gap)
+    ):
+        evidence.append(
+            "The change does not match the available normal-renewal indicators."
+        )
 
     if renewed:
         return "renewal", "low", evidence
+
     severity = "high" if current["status"] in ("expired", "invalid") else "medium"
     return "potentially_suspicious", severity, evidence
 
@@ -336,20 +365,30 @@ def check_domain(domain_id: int):
     with _check_lock:
         with _database() as connection:
             domain_row = connection.execute(
-                "SELECT * FROM monitored_domains WHERE id = ? AND enabled = 1",
-                (domain_id,),
-            ).fetchone()
-            if not domain_row:
-                return None
-            domain = domain_row["domain"]
-            previous_row = connection.execute(
                 """
-                SELECT * FROM certificate_observations
-                WHERE domain_id = ? AND fingerprint IS NOT NULL
-                ORDER BY id DESC LIMIT 1
+                SELECT *
+                FROM monitored_domains
+                WHERE id = %s AND enabled = TRUE
                 """,
                 (domain_id,),
             ).fetchone()
+
+            if not domain_row:
+                return None
+
+            domain = domain_row["domain"]
+
+            previous_row = connection.execute(
+                """
+                SELECT *
+                FROM certificate_observations
+                WHERE domain_id = %s AND fingerprint IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (domain_id,),
+            ).fetchone()
+
             previous = _observation(previous_row)
 
         try:
@@ -374,10 +413,14 @@ def check_domain(domain_id: int):
                 change_type = "baseline"
                 evidence = ["First certificate observation; baseline created."]
                 recommendation = None
+
             elif certificate["fingerprint"] == previous["sha256_fingerprint"]:
                 change_type = "unchanged"
-                evidence = ["SHA-256 certificate fingerprint matches the prior observation."]
+                evidence = [
+                    "SHA-256 certificate fingerprint matches the prior observation."
+                ]
                 recommendation = None
+
             else:
                 prior = {
                     "fingerprint": previous["sha256_fingerprint"],
@@ -389,22 +432,28 @@ def check_domain(domain_id: int):
                     "expires_at": previous["expires_at"],
                     "san_domains": previous["san_domains"],
                 }
+
                 change_type, severity, evidence = _classify_change(prior, certificate)
                 recommendation = RECOMMENDATIONS[change_type]
+
         elif analysis.get("error"):
             evidence = [str(analysis["error"])]
         else:
             evidence = ["No certificate fingerprint was available from this check."]
 
         with _database() as connection:
-            cursor = connection.execute(
+            row = connection.execute(
                 """
                 INSERT INTO certificate_observations (
                     domain_id, observed_at, status, fingerprint, issuer_json,
                     subject_json, serial_number, public_key_json, not_before,
                     expires_at, san_domains_json, change_type, severity,
                     evidence_json, recommendation
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                RETURNING *
                 """,
                 (
                     domain_id,
@@ -413,7 +462,9 @@ def check_domain(domain_id: int):
                     certificate["fingerprint"],
                     _json_value(certificate["issuer"]),
                     _json_value(certificate["subject"]),
-                    str(certificate["serial_number"]) if certificate["serial_number"] is not None else None,
+                    str(certificate["serial_number"])
+                    if certificate["serial_number"] is not None
+                    else None,
                     _json_value(certificate["public_key"]),
                     certificate["not_before"],
                     certificate["expires_at"],
@@ -423,57 +474,79 @@ def check_domain(domain_id: int):
                     _json_value(evidence),
                     recommendation,
                 ),
-            )
+            ).fetchone()
+
             connection.execute(
                 """
                 UPDATE monitored_domains
-                SET last_checked_at = ?, latest_status = ?
-                WHERE id = ?
+                SET last_checked_at = %s,
+                    latest_status = %s,
+                    last_status = %s,
+                    last_fingerprint = %s,
+                    last_expires_at = %s
+                WHERE id = %s
                 """,
-                (observed_at, certificate["status"], domain_id),
+                (
+                    observed_at,
+                    certificate["status"],
+                    certificate["status"],
+                    certificate["fingerprint"],
+                    certificate["expires_at"],
+                    domain_id,
+                ),
             )
-            row = connection.execute(
-                "SELECT * FROM certificate_observations WHERE id = ?",
-                (cursor.lastrowid,),
-            ).fetchone()
+
             return _observation(row)
 
 
 def add_monitored_domain(value: str):
     domain = normalize_domain(value)
+
     with _check_lock:
         with _database() as connection:
             existing = connection.execute(
-                "SELECT * FROM monitored_domains WHERE domain = ?",
+                "SELECT * FROM monitored_domains WHERE domain = %s",
                 (domain,),
             ).fetchone()
+
             if existing and existing["enabled"]:
                 return {
                     "created": False,
                     "domain": _domain_record(connection, existing),
                 }
+
             active_count = connection.execute(
-                "SELECT COUNT(*) AS count FROM monitored_domains WHERE enabled = 1"
+                "SELECT COUNT(*) AS count FROM monitored_domains WHERE enabled = TRUE"
             ).fetchone()["count"]
+
             if active_count >= MAX_MONITORED_DOMAINS:
                 raise ValueError(
                     f"At most {MAX_MONITORED_DOMAINS} domains can be monitored."
                 )
+
             if existing:
                 connection.execute(
-                    "UPDATE monitored_domains SET enabled = 1 WHERE id = ?",
+                    "UPDATE monitored_domains SET enabled = TRUE WHERE id = %s",
                     (existing["id"],),
                 )
                 domain_id = existing["id"]
                 created = False
+
             else:
-                cursor = connection.execute(
-                    "INSERT INTO monitored_domains (domain, created_at) VALUES (?, ?)",
+                row = connection.execute(
+                    """
+                    INSERT INTO monitored_domains (domain, created_at)
+                    VALUES (%s, %s)
+                    RETURNING id
+                    """,
                     (domain, _now()),
-                )
-                domain_id = cursor.lastrowid
+                ).fetchone()
+
+                domain_id = row["id"]
                 created = True
+
     observation = check_domain(domain_id)
+
     return {
         "created": created,
         "domain": get_monitored_domain(domain_id),
@@ -484,7 +557,11 @@ def add_monitored_domain(value: str):
 def remove_monitored_domain(domain_id: int) -> bool:
     with _database() as connection:
         cursor = connection.execute(
-            "UPDATE monitored_domains SET enabled = 0 WHERE id = ? AND enabled = 1",
+            """
+            UPDATE monitored_domains
+            SET enabled = FALSE
+            WHERE id = %s AND enabled = TRUE
+            """,
             (domain_id,),
         )
         return cursor.rowcount > 0
@@ -493,18 +570,28 @@ def remove_monitored_domain(domain_id: int) -> bool:
 def get_domain_history(domain_id: int):
     with _database() as connection:
         domain = connection.execute(
-            "SELECT * FROM monitored_domains WHERE id = ? AND enabled = 1",
+            """
+            SELECT *
+            FROM monitored_domains
+            WHERE id = %s AND enabled = TRUE
+            """,
             (domain_id,),
         ).fetchone()
+
         if not domain:
             return None
+
         rows = connection.execute(
             """
-            SELECT * FROM certificate_observations
-            WHERE domain_id = ? ORDER BY id DESC LIMIT 100
+            SELECT *
+            FROM certificate_observations
+            WHERE domain_id = %s
+            ORDER BY id DESC
+            LIMIT 100
             """,
             (domain_id,),
         ).fetchall()
+
         return {
             "domain": domain["domain"],
             "observations": [_observation(row) for row in rows],
@@ -513,40 +600,55 @@ def get_domain_history(domain_id: int):
 
 def list_certificate_alerts(limit: int = 100):
     bounded_limit = max(1, min(int(limit), 500))
+
     with _database() as connection:
         rows = connection.execute(
             """
             SELECT observations.*, domains.domain
             FROM certificate_observations AS observations
-            JOIN monitored_domains AS domains ON domains.id = observations.domain_id
-            WHERE domains.enabled = 1
-                AND observations.change_type IN ('renewal', 'potentially_suspicious')
+            JOIN monitored_domains AS domains
+                ON domains.id = observations.domain_id
+            WHERE domains.enabled = TRUE
+                AND observations.change_type IN (
+                    'renewal', 'potentially_suspicious'
+                )
             ORDER BY observations.id DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (bounded_limit,),
         ).fetchall()
+
         alerts = []
+
         for row in rows:
             alert = _observation(row)
             alert["domain"] = row["domain"]
             alert["detected_at"] = alert["observed_at"]
             alerts.append(alert)
+
         return alerts
 
 
 def monitored_domain_ids():
     with _database() as connection:
         rows = connection.execute(
-            "SELECT id FROM monitored_domains WHERE enabled = 1 ORDER BY id"
+            """
+            SELECT id
+            FROM monitored_domains
+            WHERE enabled = TRUE
+            ORDER BY id
+            """
         ).fetchall()
+
         return [row["id"] for row in rows]
 
 
 def check_all_monitored_domains():
     results = []
+
     for domain_id in monitored_domain_ids():
         result = check_domain(domain_id)
         if result is not None:
             results.append(result)
+
     return results

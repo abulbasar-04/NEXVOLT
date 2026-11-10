@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import hashlib
@@ -6,37 +7,28 @@ import ipaddress
 import os
 import re
 import secrets
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+import psycopg
+from psycopg.rows import dict_row
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-DATABASE_PATH = Path(
-    os.getenv(
-        "COMMUNITY_REPORT_DATABASE",
-        str(BACKEND_DIR / "data" / "community_reports.sqlite3"),
-    )
-)
-SCHEMA_VERSION = 1
+
 REPORT_CATEGORIES = {
-    "phishing",
-    "malware",
-    "scam",
-    "impersonation",
-    "suspicious redirect",
-    "other",
+    "phishing", "malware", "scam", "impersonation",
+    "suspicious redirect", "other",
 }
 REPORT_STATUSES = {"pending", "approved", "rejected", "resolved"}
+
 _DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_database_lock = threading.RLock()
+
 _rate_limit_lock = threading.Lock()
 _submission_attempts = {}
+
 RATE_LIMIT_MAX_SUBMISSIONS = 5
 RATE_LIMIT_WINDOW_SECONDS = 60 * 60
 MAX_RATE_LIMIT_CLIENTS = 2048
@@ -58,6 +50,7 @@ def _now() -> str:
 def normalize_report_url(value: str) -> tuple[str, str]:
     if not isinstance(value, str) or not value.strip() or len(value) > 2048:
         raise ValueError("Enter a URL no longer than 2048 characters.")
+
     if any(ord(character) < 0x20 for character in value):
         raise ValueError("URL contains invalid control characters.")
 
@@ -71,6 +64,7 @@ def normalize_report_url(value: str) -> tuple[str, str]:
 
     if scheme not in ("http", "https") or not hostname:
         raise ValueError("Only absolute HTTP and HTTPS URLs can be reported.")
+
     if parsed.username or parsed.password:
         raise ValueError("URLs containing credentials cannot be reported.")
 
@@ -78,6 +72,7 @@ def normalize_report_url(value: str) -> tuple[str, str]:
         host = hostname.rstrip(".").encode("idna").decode("ascii").lower()
     except UnicodeError as error:
         raise ValueError("URL contains an invalid domain name.") from error
+
     if not host or len(host) > 253:
         raise ValueError("URL contains an invalid domain name.")
 
@@ -97,7 +92,11 @@ def normalize_report_url(value: str) -> tuple[str, str]:
             raise ValueError("Private or non-public IP addresses cannot be reported.")
 
     netloc_host = f"[{host}]" if ":" in host else host
-    if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+
+    if port and not (
+        (scheme == "http" and port == 80)
+        or (scheme == "https" and port == 443)
+    ):
         netloc = f"{netloc_host}:{port}"
     else:
         netloc = netloc_host
@@ -109,69 +108,11 @@ def normalize_report_url(value: str) -> tuple[str, str]:
 
 
 def _connect():
-    path = Path(DATABASE_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(str(path), timeout=10)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA busy_timeout = 10000")
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured.")
 
-    with _database_lock:
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version > SCHEMA_VERSION:
-            connection.close()
-            raise RuntimeError("Community reports database schema is newer than this application.")
-        if version < 1:
-            connection.executescript(
-                """
-                CREATE TABLE community_reports (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    normalized_url TEXT NOT NULL,
-                    normalized_domain TEXT NOT NULL,
-                    category TEXT NOT NULL CHECK (
-                        category IN (
-                            'phishing', 'malware', 'scam', 'impersonation',
-                            'suspicious redirect', 'other'
-                        )
-                    ),
-                    evidence TEXT NOT NULL DEFAULT '',
-                    reporter_ref TEXT NOT NULL,
-                    submitted_at TEXT NOT NULL,
-                    moderation_status TEXT NOT NULL DEFAULT 'pending'
-                        CHECK (moderation_status IN ('pending', 'approved', 'rejected', 'resolved')),
-                    moderated_at TEXT,
-                    moderation_note TEXT,
-                    UNIQUE (normalized_url, reporter_ref)
-                );
-                CREATE INDEX idx_community_reports_url_status
-                    ON community_reports(normalized_url, moderation_status);
-                CREATE INDEX idx_community_reports_domain_status
-                    ON community_reports(normalized_domain, moderation_status);
-                CREATE INDEX idx_community_reports_submitted
-                    ON community_reports(submitted_at DESC);
-                CREATE TABLE community_report_moderation (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    report_id INTEGER NOT NULL REFERENCES community_reports(id) ON DELETE CASCADE,
-                    previous_status TEXT NOT NULL,
-                    new_status TEXT NOT NULL,
-                    note TEXT NOT NULL DEFAULT '',
-                    changed_at TEXT NOT NULL
-                );
-                CREATE TABLE community_report_metadata (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-                """
-            )
-            connection.execute("PRAGMA user_version = 1")
-        connection.execute(
-            """
-            INSERT OR IGNORE INTO community_report_metadata (key, value)
-            VALUES ('reporter_signing_secret', ?)
-            """,
-            (secrets.token_hex(32),),
-        )
-    return connection
+    return psycopg.connect(database_url, row_factory=dict_row)
 
 
 @contextmanager
@@ -189,24 +130,34 @@ def _database():
 
 def _reporter_secret(connection) -> bytes:
     row = connection.execute(
-        "SELECT value FROM community_report_metadata WHERE key = 'reporter_signing_secret'"
+        """
+        SELECT value
+        FROM community_report_metadata
+        WHERE key = 'reporter_signing_secret'
+        """
     ).fetchone()
+
     if row is None:
         raise RuntimeError("Community reporter signing secret is unavailable.")
+
     return bytes.fromhex(row["value"])
 
 
 def _sign_reporter_id(reporter_id: str, secret: bytes) -> str:
-    signature = hmac.new(secret, reporter_id.encode("ascii"), hashlib.sha256).hexdigest()
+    signature = hmac.new(
+        secret, reporter_id.encode("ascii"), hashlib.sha256
+    ).hexdigest()
     return f"{reporter_id}.{signature}"
 
 
 def _reporter_reference(token: str | None, secret: bytes) -> tuple[str, str]:
     if isinstance(token, str) and len(token) <= 180:
         reporter_id, separator, supplied_signature = token.partition(".")
+
         if separator and re.fullmatch(r"[A-Za-z0-9_-]{20,100}", reporter_id):
             expected_token = _sign_reporter_id(reporter_id, secret)
             expected_signature = expected_token.partition(".")[2]
+
             if hmac.compare_digest(supplied_signature, expected_signature):
                 reference = hmac.new(
                     secret,
@@ -217,29 +168,35 @@ def _reporter_reference(token: str | None, secret: bytes) -> tuple[str, str]:
 
     reporter_id = secrets.token_urlsafe(32)
     token = _sign_reporter_id(reporter_id, secret)
+
     reference = hmac.new(
         secret,
         f"reference:{reporter_id}".encode("ascii"),
         hashlib.sha256,
     ).hexdigest()
+
     return reference, token
 
 
 def ensure_reporter(request):
     token = request.cookies.get(REPORTER_COOKIE_NAME)
+
     with _database() as connection:
         secret = _reporter_secret(connection)
         reference, signed_token = _reporter_reference(token, secret)
+
     return reference, signed_token, signed_token != token
 
 
 def _public_report(row, include_query=False):
     normalized_url = row["normalized_url"]
+
     if not include_query:
         parsed = urlsplit(normalized_url)
         normalized_url = urlunsplit(
             (parsed.scheme, parsed.netloc, parsed.path, "", "")
         )
+
     return {
         "id": row["id"],
         "url": normalized_url,
@@ -255,29 +212,45 @@ def _public_report(row, include_query=False):
 def _clean_evidence(value: str | None) -> str:
     if value is None:
         return ""
+
     if not isinstance(value, str) or len(value) > 2000:
         raise ValueError("Evidence must be 2000 characters or fewer.")
+
     cleaned = _CONTROL_CHARS.sub("", value).strip()
+
     if len(cleaned) > 2000:
         raise ValueError("Evidence must be 2000 characters or fewer.")
+
     return cleaned
 
 
-def submit_report(url: str, category: str, evidence: str | None, reporter_ref: str):
+def submit_report(
+    url: str,
+    category: str,
+    evidence: str | None,
+    reporter_ref: str,
+):
     normalized_url, domain = normalize_report_url(url)
-    normalized_category = " ".join(str(category or "").strip().lower().split())
+    normalized_category = " ".join(
+        str(category or "").strip().lower().split()
+    )
+
     if normalized_category not in REPORT_CATEGORIES:
         raise ValueError("Select a supported report category.")
+
     cleaned_evidence = _clean_evidence(evidence)
     submitted_at = _now()
+
     try:
         with _database() as connection:
-            cursor = connection.execute(
+            row = connection.execute(
                 """
                 INSERT INTO community_reports (
-                    normalized_url, normalized_domain, category, evidence,
-                    reporter_ref, submitted_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    normalized_url, normalized_domain, category,
+                    evidence, reporter_ref, submitted_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     normalized_url,
@@ -287,31 +260,34 @@ def submit_report(url: str, category: str, evidence: str | None, reporter_ref: s
                     reporter_ref,
                     submitted_at,
                 ),
-            )
+            ).fetchone()
+
             return {
-                "id": cursor.lastrowid,
+                "id": row["id"],
                 "url": normalized_url,
                 "domain": domain,
                 "category": normalized_category,
                 "submitted_at": submitted_at,
                 "status": "pending",
-                "message": "Report submitted for review. A report is not a confirmed threat.",
+                "message": (
+                    "Report submitted for review. "
+                    "A report is not a confirmed threat."
+                ),
             }
-    except sqlite3.IntegrityError as error:
-        if "community_reports.normalized_url" in str(error) or "UNIQUE constraint failed" in str(error):
-            raise DuplicateReportError(
-                "This browser has already submitted a report for this URL."
-            ) from error
-        raise
+
+    except psycopg.errors.UniqueViolation as error:
+        raise DuplicateReportError(
+            "This browser has already submitted a report for this URL."
+        ) from error
 
 
 def list_public_reports(limit: int = 50, offset: int = 0):
     with _database() as connection:
         rows = connection.execute(
             """
-            SELECT report.id, report.normalized_url, report.normalized_domain,
-                   report.category, report.submitted_at, report.moderation_status,
-                   report.normalized_url AS url,
+            SELECT report.id, report.normalized_url,
+                   report.normalized_domain, report.category,
+                   report.submitted_at, report.moderation_status,
                    (
                        SELECT COUNT(*) FROM community_reports AS active
                        WHERE active.normalized_url = report.normalized_url
@@ -326,10 +302,11 @@ def list_public_reports(limit: int = 50, offset: int = 0):
             FROM community_reports AS report
             WHERE report.moderation_status != 'rejected'
             ORDER BY report.submitted_at DESC, report.id DESC
-            LIMIT ? OFFSET ?
+            LIMIT %s OFFSET %s
             """,
             (limit, offset),
         ).fetchall()
+
         return [_public_report(row) for row in rows]
 
 
@@ -337,9 +314,9 @@ def list_verified_reports(limit: int = 50, offset: int = 0):
     with _database() as connection:
         rows = connection.execute(
             """
-            SELECT report.id, report.normalized_url, report.normalized_domain,
-                   report.category, report.submitted_at, report.moderation_status,
-                   report.normalized_url AS url,
+            SELECT report.id, report.normalized_url,
+                   report.normalized_domain, report.category,
+                   report.submitted_at, report.moderation_status,
                    (
                        SELECT COUNT(*) FROM community_reports AS verified
                        WHERE verified.normalized_url = report.normalized_url
@@ -354,52 +331,53 @@ def list_verified_reports(limit: int = 50, offset: int = 0):
             FROM community_reports AS report
             WHERE report.moderation_status = 'approved'
             ORDER BY report.submitted_at DESC, report.id DESC
-            LIMIT ? OFFSET ?
+            LIMIT %s OFFSET %s
             """,
             (limit, offset),
         ).fetchall()
+
         return [_public_report(row) for row in rows]
 
 
 def list_admin_reports(status: str | None = None, limit: int = 100):
     if status is not None and status not in REPORT_STATUSES:
         raise ValueError("Select a valid moderation status.")
+
     with _database() as connection:
+        query = """
+            SELECT report.*,
+                   (
+                       SELECT COUNT(*) FROM community_reports AS related
+                       WHERE related.normalized_url = report.normalized_url
+                         AND related.moderation_status != 'rejected'
+                   ) AS report_count,
+                   (
+                       SELECT COUNT(DISTINCT related.reporter_ref)
+                       FROM community_reports AS related
+                       WHERE related.normalized_url = report.normalized_url
+                         AND related.moderation_status != 'rejected'
+                   ) AS distinct_reporters
+            FROM community_reports AS report
+        """
+
         if status:
             rows = connection.execute(
-                """
-                SELECT report.*,
-                       (SELECT COUNT(*) FROM community_reports AS related
-                        WHERE related.normalized_url = report.normalized_url
-                          AND related.moderation_status != 'rejected') AS report_count,
-                       (SELECT COUNT(DISTINCT related.reporter_ref)
-                        FROM community_reports AS related
-                        WHERE related.normalized_url = report.normalized_url
-                          AND related.moderation_status != 'rejected') AS distinct_reporters
-                FROM community_reports AS report
-                WHERE report.moderation_status = ?
-                ORDER BY report.submitted_at DESC, report.id DESC
-                LIMIT ?
+                query + """
+                    WHERE report.moderation_status = %s
+                    ORDER BY report.submitted_at DESC, report.id DESC
+                    LIMIT %s
                 """,
                 (status, limit),
             ).fetchall()
         else:
             rows = connection.execute(
-                """
-                SELECT report.*,
-                       (SELECT COUNT(*) FROM community_reports AS related
-                        WHERE related.normalized_url = report.normalized_url
-                          AND related.moderation_status != 'rejected') AS report_count,
-                       (SELECT COUNT(DISTINCT related.reporter_ref)
-                        FROM community_reports AS related
-                        WHERE related.normalized_url = report.normalized_url
-                          AND related.moderation_status != 'rejected') AS distinct_reporters
-                FROM community_reports AS report
-                ORDER BY report.submitted_at DESC, report.id DESC
-                LIMIT ?
+                query + """
+                    ORDER BY report.submitted_at DESC, report.id DESC
+                    LIMIT %s
                 """,
                 (limit,),
             ).fetchall()
+
         return [
             {
                 **_public_report(row, include_query=True),
@@ -410,43 +388,65 @@ def list_admin_reports(status: str | None = None, limit: int = 100):
         ]
 
 
-def moderate_report(report_id: int, new_status: str, note: str | None = None):
+def moderate_report(
+    report_id: int,
+    new_status: str,
+    note: str | None = None,
+):
     if new_status not in {"approved", "rejected", "resolved"}:
         raise ValueError("Select approved, rejected, or resolved.")
+
     clean_note = _clean_evidence(note)
+
     with _database() as connection:
         row = connection.execute(
-            "SELECT moderation_status FROM community_reports WHERE id = ?",
+            """
+            SELECT moderation_status
+            FROM community_reports
+            WHERE id = %s
+            FOR UPDATE
+            """,
             (report_id,),
         ).fetchone()
+
         if row is None:
             return None
+
         old_status = row["moderation_status"]
+
         allowed_transitions = {
             "pending": {"approved", "rejected", "resolved"},
             "approved": {"resolved"},
         }
+
         if new_status not in allowed_transitions.get(old_status, set()):
             raise ModerationConflictError(
                 f"Cannot change a {old_status} report to {new_status}."
             )
+
         changed_at = _now()
+
         connection.execute(
             """
             UPDATE community_reports
-            SET moderation_status = ?, moderated_at = ?, moderation_note = ?
-            WHERE id = ?
+            SET moderation_status = %s,
+                moderated_at = %s,
+                moderation_note = %s
+            WHERE id = %s
             """,
             (new_status, changed_at, clean_note, report_id),
         )
+
         connection.execute(
             """
             INSERT INTO community_report_moderation (
                 report_id, previous_status, new_status, note, changed_at
-            ) VALUES (?, ?, ?, ?, ?)
+            )
+            VALUES (%s, %s, %s, %s, %s)
             """,
             (report_id, old_status, new_status, clean_note, changed_at),
         )
+
         return {
             "id": report_id,
             "status": new_status,
@@ -456,12 +456,13 @@ def moderate_report(report_id: int, new_status: str, note: str | None = None):
 
 def lookup_community_reports(url: str):
     normalized_url, domain = normalize_report_url(url)
+
     with _database() as connection:
         rows = connection.execute(
             """
             SELECT category, moderation_status, reporter_ref, submitted_at
             FROM community_reports
-            WHERE (normalized_url = ? OR normalized_domain = ?)
+            WHERE (normalized_url = %s OR normalized_domain = %s)
               AND moderation_status IN ('pending', 'approved')
             """,
             (normalized_url, domain),
@@ -473,6 +474,7 @@ def lookup_community_reports(url: str):
         for row in rows
         if row["moderation_status"] == "approved"
     }
+
     categories = {}
     for row in rows:
         categories[row["category"]] = categories.get(row["category"], 0) + 1
@@ -497,8 +499,7 @@ def lookup_community_reports(url: str):
         "confidence": confidence,
         "confidence_note": (
             "Community reports are user-submitted and are not proof of malicious activity."
-            if rows
-            else None
+            if rows else None
         ),
         "checked_at": checked_at,
         "reported_at": reported_at,
@@ -512,30 +513,38 @@ def lookup_community_reports(url: str):
     }
 
 
-def allow_submission(client_key: str, now: float | None = None) -> tuple[bool, int]:
+def allow_submission(
+    client_key: str,
+    now: float | None = None,
+) -> tuple[bool, int]:
     current_time = time.monotonic() if now is None else now
+
     with _rate_limit_lock:
         attempts = _submission_attempts.setdefault(client_key, [])
+
         attempts[:] = [
-            timestamp
-            for timestamp in attempts
+            timestamp for timestamp in attempts
             if current_time - timestamp < RATE_LIMIT_WINDOW_SECONDS
         ]
+
         if len(attempts) >= RATE_LIMIT_MAX_SUBMISSIONS:
             retry_after = max(
                 1,
                 int(RATE_LIMIT_WINDOW_SECONDS - (current_time - attempts[0])),
             )
             return False, retry_after
+
         if len(_submission_attempts) > MAX_RATE_LIMIT_CLIENTS:
             stale_cutoff = current_time - RATE_LIMIT_WINDOW_SECONDS
+
             for key in list(_submission_attempts):
                 _submission_attempts[key] = [
-                    timestamp
-                    for timestamp in _submission_attempts[key]
+                    timestamp for timestamp in _submission_attempts[key]
                     if timestamp >= stale_cutoff
                 ]
+
                 if not _submission_attempts[key]:
                     del _submission_attempts[key]
+
         attempts.append(current_time)
         return True, 0

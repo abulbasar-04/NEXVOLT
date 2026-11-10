@@ -5,11 +5,18 @@ import asyncio
 import hmac
 import logging
 import os
-from contextlib import asynccontextmanager
-from typing import Literal, Optional
-from urllib.parse import urlparse
 import ipaddress
 import re
+
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Literal, Optional
+from urllib.parse import urlparse
+
+from dotenv import load_dotenv
+
+# Load local backend environment before importing services.
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 import dns.resolver
 import dns.exception
@@ -153,7 +160,7 @@ def health():
 
 
 # =========================================================
-# URL SCANNER
+# REQUEST MODELS
 # =========================================================
 
 class ScanRequest(BaseModel):
@@ -178,6 +185,10 @@ class CommunityModerationRequest(BaseModel):
     status: Literal["approved", "rejected", "resolved"]
     note: str = Field(default="", max_length=500)
 
+
+# =========================================================
+# URL SCANNER
+# =========================================================
 
 @app.post("/api/scan")
 def scan_url(request: ScanRequest):
